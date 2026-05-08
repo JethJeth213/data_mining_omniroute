@@ -9,6 +9,8 @@ from datetime import datetime
 import mysql.connector
 from mysql.connector import Error
 import bcrypt
+import subprocess
+import threading
 
 app = Flask(__name__)
 CORS(app)
@@ -195,6 +197,54 @@ def predict():
             'full_message': f"Zone: {zone_id}\nTime: {datetime_str}\nPredicted: {pred_count} deliveries\nDemand: {demand_level}\nRecommendation: {recommendation}"
         }
     })
+
+@app.route('/api/retrain-model', methods=['POST'])
+def retrain_model():
+    """Retrain the ML model with latest delivery records"""
+    
+    def retrain_in_background():
+        try:
+            print("🔄 Starting model retraining with latest data...")
+            result = subprocess.run(
+                ['python', 'train_standalone.py'],
+                capture_output=True,
+                text=True,
+                cwd=os.path.dirname(os.path.abspath(__file__))
+            )
+            if result.returncode == 0:
+                print("✅ Model retrained successfully!")
+                # Reload models
+                global reg_model, cls_model, scaler, models_loaded, feature_columns
+                try:
+                    reg_model = joblib.load('backend/models/regression_model.pkl')
+                    cls_model = joblib.load('backend/models/classification_model.pkl')
+                    scaler = joblib.load('backend/models/scaler.pkl')
+                    with open('backend/models/feature_columns.txt', 'r') as f:
+                        feature_columns = f.read().strip().split(',')
+                    models_loaded = True
+                    print("✅ Models reloaded successfully!")
+                except Exception as e:
+                    print(f"⚠️ Error reloading models: {e}")
+            else:
+                print(f"❌ Retraining failed: {result.stderr}")
+        except Exception as e:
+            print(f"❌ Retraining error: {e}")
+    
+    # Run retraining in background thread to not block the API
+    thread = threading.Thread(target=retrain_in_background)
+    thread.start()
+    
+    return jsonify({'success': True, 'message': 'Model retraining started in background'})
+
+@app.route('/api/delivery-records/count', methods=['GET'])
+def get_delivery_records_count():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) as count FROM delivery_records")
+    result = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return jsonify({'count': result[0] if result else 0})
 
 # ============ VEHICLE MANAGEMENT API ============
 @app.route('/api/vehicles', methods=['GET'])
@@ -434,7 +484,7 @@ def get_dispatch_assignments():
     cursor = conn.cursor(dictionary=True)
     
     zone_id = request.args.get('zone_id')
-    status = request.args.get('status')
+    status = request.args.get('status')  # This can be single status or comma-separated
     date = request.args.get('date')
     
     query = """
@@ -448,9 +498,18 @@ def get_dispatch_assignments():
     if zone_id:
         query += " AND da.zone_id = %s"
         params.append(zone_id)
+    
+    # Handle multiple statuses (comma-separated)
     if status:
-        query += " AND da.dispatch_status = %s"
-        params.append(status)
+        if ',' in status:
+            status_list = status.split(',')
+            placeholders = ','.join(['%s'] * len(status_list))
+            query += f" AND da.dispatch_status IN ({placeholders})"
+            params.extend(status_list)
+        else:
+            query += " AND da.dispatch_status = %s"
+            params.append(status)
+    
     if date:
         query += " AND DATE(da.dispatch_datetime) = %s"
         params.append(date)
@@ -522,9 +581,53 @@ def update_dispatch_assignment(assignment_id):
             updates.append("completed_at = %s")
             params.append(data['completed_at'])
         
+        # Check if status is being changed to 'completed'
+        is_completing = data.get('dispatch_status') == 'completed'
+        
         if updates:
             params.append(assignment_id)
             cursor.execute(f"UPDATE dispatch_assignments SET {', '.join(updates)} WHERE assignment_id = %s", params)
+            
+            # If marking as completed, create delivery record
+            if is_completing:
+                # Use a NEW dictionary cursor for fetching
+                dict_cursor = conn.cursor(dictionary=True)
+                dict_cursor.execute("""
+                    SELECT zone_id, dispatch_datetime, actual_deliveries, predicted_deliveries, 
+                           assigned_vehicles, assigned_drivers
+                    FROM dispatch_assignments 
+                    WHERE assignment_id = %s
+                """, (assignment_id,))
+                dispatch = dict_cursor.fetchone()
+                dict_cursor.close()
+                
+                if dispatch:
+                    # Use actual_deliveries if provided, otherwise use predicted_deliveries
+                    delivery_count = dispatch['actual_deliveries'] if dispatch['actual_deliveries'] else dispatch['predicted_deliveries']
+                    
+                    # Determine vehicle type from assigned vehicles
+                    vehicle_type = 'motorcycle'  # default
+                    if dispatch['assigned_vehicles']:
+                        if 'van' in dispatch['assigned_vehicles'].lower():
+                            vehicle_type = 'van'
+                        elif 'truck' in dispatch['assigned_vehicles'].lower():
+                            vehicle_type = 'truck'
+                    
+                    # Insert into delivery_records
+                    cursor.execute("""
+                        INSERT INTO delivery_records 
+                        (zone_id, delivery_timestamp, delivery_count, vehicle_type, distance_km)
+                        VALUES (%s, %s, %s, %s, %s)
+                    """, (
+                        dispatch['zone_id'],
+                        dispatch['dispatch_datetime'],
+                        delivery_count,
+                        vehicle_type,
+                        round(5 + (delivery_count * 0.1), 2)
+                    ))
+                    
+                    print(f"✅ Created delivery record for dispatch {assignment_id}")
+            
             conn.commit()
         
         cursor.close()
@@ -532,6 +635,7 @@ def update_dispatch_assignment(assignment_id):
         
         return jsonify({'success': True})
     except Exception as e:
+        conn.rollback()
         cursor.close()
         conn.close()
         return jsonify({'success': False, 'error': str(e)})
@@ -594,6 +698,191 @@ def get_driver_assignments():
     conn.close()
     
     return jsonify({'success': True, 'assignments': assignments})
+
+@app.route('/api/dispatch/assignments/<int:assignment_id>/complete-with-delivery', methods=['POST'])
+def complete_dispatch_with_delivery(assignment_id):
+    """Complete a dispatch and free up vehicles/drivers"""
+    data = request.json
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
+    try:
+        actual_deliveries = data.get('actual_deliveries')
+        vehicle_type = data.get('vehicle_type', 'motorcycle')
+        distance_km = data.get('distance_km')
+        
+        dict_cursor = conn.cursor(dictionary=True)
+        regular_cursor = conn.cursor()
+        
+        # Get dispatch details
+        dict_cursor.execute("""
+            SELECT da.zone_id, da.dispatch_datetime, da.predicted_deliveries, 
+                   da.assigned_vehicles, da.assigned_drivers, da.dispatch_status
+            FROM dispatch_assignments da
+            WHERE da.assignment_id = %s
+        """, (assignment_id,))
+        dispatch = dict_cursor.fetchone()
+        
+        if not dispatch:
+            return jsonify({'success': False, 'error': 'Dispatch not found'})
+        
+        # Only allow completion if status is enroute
+        if dispatch['dispatch_status'] != 'enroute':
+            return jsonify({'success': False, 'error': f'Dispatch must be enroute to complete. Current status: {dispatch["dispatch_status"]}'})
+        
+        delivery_count = actual_deliveries if actual_deliveries else dispatch['predicted_deliveries']
+        
+        if not distance_km:
+            distance_km = round(2 + (delivery_count * 0.3), 2)
+        
+        # Update dispatch to completed
+        regular_cursor.execute("""
+            UPDATE dispatch_assignments 
+            SET dispatch_status = 'completed', 
+                actual_deliveries = %s,
+                completed_at = NOW()
+            WHERE assignment_id = %s
+        """, (delivery_count, assignment_id))
+        
+        # Insert into delivery_records
+        regular_cursor.execute("""
+            INSERT INTO delivery_records 
+            (zone_id, delivery_timestamp, delivery_count, vehicle_type, distance_km)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (dispatch['zone_id'], dispatch['dispatch_datetime'], delivery_count, vehicle_type, distance_km))
+        
+        record_id = regular_cursor.lastrowid
+        
+        # FREE UP VEHICLES (only if they were assigned/enroute)
+        if dispatch['assigned_vehicles']:
+            import re
+            vehicle_codes = re.findall(r'([A-Z]+-[0-9]+)', dispatch['assigned_vehicles'])
+            
+            for vehicle_code in vehicle_codes:
+                regular_cursor.execute("""
+                    UPDATE vehicles 
+                    SET status = 'available', 
+                        driver_id = NULL,
+                        updated_at = NOW()
+                    WHERE vehicle_code = %s AND status = 'assigned'
+                """, (vehicle_code,))
+                print(f"   ✅ Vehicle {vehicle_code} freed up")
+        
+        # FREE UP DRIVERS
+        if dispatch['assigned_drivers']:
+            driver_names = [name.strip() for name in dispatch['assigned_drivers'].split(',')]
+            
+            for driver_name in driver_names:
+                dict_cursor.execute("""
+                    SELECT user_id FROM users 
+                    WHERE full_name = %s OR username = %s
+                """, (driver_name, driver_name))
+                driver = dict_cursor.fetchone()
+                
+                if driver:
+                    regular_cursor.execute("""
+                        UPDATE driver_assignments 
+                        SET status = 'completed'
+                        WHERE driver_id = %s 
+                        AND shift_date = CURDATE()
+                        AND status = 'active'
+                    """, (driver['user_id'],))
+                    print(f"   ✅ Driver {driver_name} freed up")
+        
+        conn.commit()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Dispatch completed, vehicles and drivers freed up',
+            'delivery_record_id': record_id
+        })
+        
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+@app.route('/api/dispatch/assignments/<int:assignment_id>/enroute', methods=['PUT'])
+def mark_dispatch_enroute(assignment_id):
+    """Mark dispatch as enroute and assign vehicles/drivers"""
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
+    try:
+        dict_cursor = conn.cursor(dictionary=True)
+        regular_cursor = conn.cursor()
+        
+        # Get dispatch details
+        dict_cursor.execute("""
+            SELECT zone_id, assigned_vehicles, assigned_drivers, dispatch_status
+            FROM dispatch_assignments 
+            WHERE assignment_id = %s
+        """, (assignment_id,))
+        dispatch = dict_cursor.fetchone()
+        
+        if not dispatch:
+            return jsonify({'success': False, 'error': 'Dispatch not found'})
+        
+        if dispatch['dispatch_status'] != 'assigned':
+            return jsonify({'success': False, 'error': f'Dispatch must be assigned first. Current status: {dispatch["dispatch_status"]}'})
+        
+        # Update dispatch status to enroute
+        regular_cursor.execute("""
+            UPDATE dispatch_assignments 
+            SET dispatch_status = 'enroute'
+            WHERE assignment_id = %s
+        """, (assignment_id,))
+        
+        # Mark vehicles as assigned
+        if dispatch['assigned_vehicles']:
+            import re
+            vehicle_codes = re.findall(r'([A-Z]+-[0-9]+)', dispatch['assigned_vehicles'])
+            
+            for vehicle_code in vehicle_codes:
+                regular_cursor.execute("""
+                    UPDATE vehicles 
+                    SET status = 'assigned', 
+                        updated_at = NOW()
+                    WHERE vehicle_code = %s AND status = 'available'
+                """, (vehicle_code,))
+                print(f"   ✅ Vehicle {vehicle_code} marked as assigned")
+        
+        # Mark drivers as active
+        if dispatch['assigned_drivers']:
+            driver_names = [name.strip() for name in dispatch['assigned_drivers'].split(',')]
+            
+            for driver_name in driver_names:
+                dict_cursor.execute("""
+                    SELECT user_id FROM users 
+                    WHERE full_name = %s OR username = %s
+                """, (driver_name, driver_name))
+                driver = dict_cursor.fetchone()
+                
+                if driver:
+                    regular_cursor.execute("""
+                        UPDATE driver_assignments 
+                        SET status = 'active'
+                        WHERE driver_id = %s 
+                        AND shift_date = CURDATE()
+                        AND status = 'scheduled'
+                    """, (driver['user_id'],))
+                    print(f"   ✅ Driver {driver_name} marked as active")
+        
+        conn.commit()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Dispatch is now enroute, vehicles and drivers assigned'
+        })
+        
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
 
 @app.route('/api/driver/assignments', methods=['POST'])
 def create_driver_assignment():
@@ -836,6 +1125,40 @@ def get_dispatch_assignments_enhanced():
         }
     })
 
+@app.route('/api/delivery-records', methods=['POST'])
+def add_delivery_record():
+    """Manually add a delivery record (for historical data)"""
+    data = request.json
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("""
+            INSERT INTO delivery_records 
+            (zone_id, delivery_timestamp, delivery_count, vehicle_type, distance_km)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (
+            data['zone_id'],
+            data['delivery_timestamp'],
+            data['delivery_count'],
+            data.get('vehicle_type', 'motorcycle'),
+            data.get('distance_km', 5.0)
+        ))
+        
+        conn.commit()
+        record_id = cursor.lastrowid
+        cursor.close()
+        conn.close()
+        
+        return jsonify({'success': True, 'record_id': record_id})
+    except Exception as e:
+        cursor.close()
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+    
 @app.route('/api/dispatch/assignments/full', methods=['POST'])
 def create_full_dispatch():
     """Create dispatch assignment with driver and vehicle association"""
