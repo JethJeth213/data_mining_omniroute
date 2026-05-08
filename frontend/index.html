@@ -3,126 +3,90 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OmniRoute-DM | Demand Forecasting Dashboard</title>
+    <title>OmniRoute-DM | Dispatch Management System</title>
     <link rel="stylesheet" href="style.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
 <body>
-    <div class="container">
-        <!-- Header -->
-        <header class="header">
-            <div class="logo">
+    <div class="app-container">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar">
+            <div class="sidebar-logo">
                 <div class="logo-icon">📊</div>
-                <div class="logo-text">
-                    <h1>OmniRoute-DM</h1>
-                    <span>Demand Forecasting & Peak Detection</span>
-                </div>
+                <div class="logo-text">OmniRoute<span>-DM</span></div>
             </div>
-            <div class="header-badge">
-                <span class="badge">Data Mining System</span>
+            <nav class="sidebar-nav">
+                <a href="#" class="nav-item active" data-page="dashboard">
+                    <i class="fas fa-tachometer-alt"></i>
+                    <span>Dashboard</span>
+                </a>
+                <a href="#" class="nav-item" data-page="forecast">
+                    <i class="fas fa-chart-line"></i>
+                    <span>Demand Forecast</span>
+                </a>
+                <a href="#" class="nav-item" data-page="dispatch">
+                    <i class="fas fa-truck"></i>
+                    <span>Fleet Dispatch</span>
+                </a>
+                <a href="#" class="nav-item" data-page="vehicles">
+                    <i class="fas fa-car"></i>
+                    <span>Vehicle Management</span>
+                </a>
+                <a href="#" class="nav-item" data-page="users">
+                    <i class="fas fa-users"></i>
+                    <span>User Management</span>
+                </a>
+            </nav>
+            <div class="sidebar-footer">
+                <div class="system-version">v2.0 | Data Mining System</div>
             </div>
-        </header>
+        </aside>
 
         <!-- Main Content -->
-        <div class="main-content">
-            <!-- Control Panel -->
-            <div class="control-panel">
-                <div class="panel-header">
-                    <h2>🎯 Prediction Settings</h2>
-                    <p>Select zone and time slot for demand forecast</p>
+        <main class="main-area">
+            <header class="top-bar">
+                <div class="page-title">
+                    <h1 id="pageTitle">Dashboard</h1>
                 </div>
-
-                <div class="form-group">
-                    <label for="zoneSelect">📍 Delivery Zone</label>
-                    <select id="zoneSelect" class="form-control">
-                        <option value="">Select a zone...</option>
-                        <option value="ZONE_A">Zone A - Downtown</option>
-                        <option value="ZONE_B">Zone B - North District</option>
-                        <option value="ZONE_C">Zone C - South District</option>
-                        <option value="ZONE_D">Zone D - East Commercial</option>
-                        <option value="ZONE_E">Zone E - West Residential</option>
-                    </select>
+                <div class="user-info">
+                    <span class="user-name">Admin User</span>
+                    <i class="fas fa-user-circle"></i>
                 </div>
+            </header>
 
-                <div class="form-group">
-                    <label for="dateTimeSelect">⏰ Date & Time (Next 24 hours)</label>
-                    <input type="datetime-local" id="dateTimeSelect" class="form-control">
+            <div class="content-area" id="contentArea">
+                <!-- Dynamic content loaded here -->
+                <div class="loading-placeholder">
+                    <div class="loading-spinner-small"></div>
+                    <p>Loading dashboard...</p>
                 </div>
-
-                <div class="quick-select">
-                    <label>Quick Select:</label>
-                    <div class="quick-buttons">
-                        <button class="quick-btn" data-hours="1">+1 Hour</button>
-                        <button class="quick-btn" data-hours="3">+3 Hours</button>
-                        <button class="quick-btn" data-hours="6">+6 Hours</button>
-                        <button class="quick-btn" data-hours="12">+12 Hours</button>
-                        <button class="quick-btn" data-hours="24">+24 Hours</button>
-                    </div>
-                </div>
-
-                <button id="predictBtn" class="predict-btn">
-                    <span>🔮 Predict Demand</span>
-                </button>
             </div>
 
-            <!-- Results Panel -->
-            <div class="results-panel" id="resultsPanel" style="display: none;">
-                <div class="results-header">
-                    <h2>📈 Prediction Results</h2>
-                    <div class="timestamp" id="predictionTimestamp"></div>
-                </div>
+            <footer class="footer">
+                <p>OmniRoute-DM | Data Mining-Based Demand Forecasting | Decision Support Tool</p>
+                <p class="disclaimer">⚠️ This is a demand forecast only. Final dispatch decisions remain with the human dispatcher.</p>
+            </footer>
+        </main>
+    </div>
 
-                <div class="metrics-grid">
-                    <div class="metric-card">
-                        <div class="metric-label">Predicted Deliveries</div>
-                        <div class="metric-value" id="predictedCount">--</div>
-                        <div class="metric-sub" id="confidenceInterval"></div>
-                    </div>
-
-                    <div class="metric-card demand-card">
-                        <div class="metric-label">Demand Level</div>
-                        <div class="metric-value" id="demandLevel">--</div>
-                        <div class="metric-sub" id="demandLevelIcon"></div>
-                    </div>
-
-                    <div class="metric-card">
-                        <div class="metric-label">Zone</div>
-                        <div class="metric-value" id="zoneName">--</div>
-                        <div class="metric-sub">Selected zone</div>
-                    </div>
-                </div>
-
-                <div class="recommendation-card">
-                    <div class="rec-header">
-                        <span>🚚 Dispatch Recommendation</span>
-                    </div>
-                    <div class="rec-content" id="recommendation">
-                        Waiting for prediction...
-                    </div>
-                    <div class="vehicle-breakdown" id="vehicleBreakdown"></div>
-                </div>
-
-                <div class="full-message" id="fullMessage"></div>
+    <!-- Modal for forms -->
+    <div id="modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modalTitle">Modal Title</h3>
+                <span class="modal-close" onclick="closeModal()">&times;</span>
             </div>
-
-            <!-- Loading Overlay -->
-            <div id="loadingOverlay" class="loading-overlay" style="display: none;">
-                <div class="loading-spinner"></div>
-                <p>Analyzing historical patterns...</p>
+            <div class="modal-body" id="modalBody">
+                <!-- Dynamic form content -->
             </div>
         </div>
+    </div>
 
-        <!-- Historical Stats Section -->
-        <div class="stats-section" id="statsSection" style="display: none;">
-            <h3>📊 Zone Historical Statistics</h3>
-            <div class="stats-grid" id="statsGrid"></div>
-        </div>
-
-        <!-- Footer -->
-        <footer class="footer">
-            <p>OmniRoute-DM | Data Mining-Based Demand Forecasting | Decision Support Tool</p>
-            <p class="disclaimer">⚠️ This is a demand forecast only. Final dispatch decisions remain with the human dispatcher.</p>
-        </footer>
+    <!-- Loading Overlay -->
+    <div id="loadingOverlay" class="loading-overlay" style="display: none;">
+        <div class="loading-spinner"></div>
+        <p>Processing request...</p>
     </div>
 
     <script src="script.js"></script>

@@ -12,11 +12,24 @@ def generate_delivery_data(start_date, end_date, zones):
     date_range = pd.date_range(start=start_date, end=end_date, freq='h')
     records = []
     
-    # Define holiday dates (Philippine holidays example)
-    holidays = ['2024-01-01', '2024-04-09', '2024-05-01', '2024-06-12', 
-                '2024-08-21', '2024-11-30', '2024-12-25', '2024-12-30']
+    # Define holiday dates for 2026 (Philippine holidays)
+    holidays_2026 = [
+        '2026-01-01',  # New Year's Day
+        '2026-04-09',  # Araw ng Kagitingan
+        '2026-05-01',  # Labor Day
+        '2026-06-12',  # Independence Day
+        '2026-08-21',  # Ninoy Aquino Day
+        '2026-08-31',  # National Heroes Day (last Monday of August)
+        '2026-11-30',  # Bonifacio Day
+        '2026-12-25',  # Christmas Day
+        '2026-12-30',  # Rizal Day
+        '2026-04-01',  # Maundy Thursday (example - actual dates vary)
+        '2026-04-02',  # Good Friday (example - actual dates vary)
+        '2026-04-03',  # Black Saturday (example - actual dates vary)
+    ]
     
-    print(f"Generating data for {len(date_range)} hours...")
+    print(f"Generating data from {start_date} to {end_date}")
+    print(f"Total hours to generate: {len(date_range)}")
     
     for zone in zones:
         print(f"  Processing zone: {zone}")
@@ -24,7 +37,7 @@ def generate_delivery_data(start_date, end_date, zones):
             hour = timestamp.hour
             day_of_week = timestamp.dayofweek
             is_weekend = 1 if day_of_week >= 5 else 0
-            is_holiday = 1 if timestamp.strftime('%Y-%m-%d') in holidays else 0
+            is_holiday = 1 if timestamp.strftime('%Y-%m-%d') in holidays_2026 else 0
             
             # Base demand by zone and hour pattern
             if zone == 'ZONE_A':  # Downtown
@@ -58,6 +71,13 @@ def generate_delivery_data(start_date, end_date, zones):
             if is_holiday:
                 base_demand *= 1.3
             
+            # Month-based adjustment (seasonal patterns)
+            month = timestamp.month
+            if month in [12, 1, 2]:  # Holiday season
+                base_demand *= 1.2
+            elif month in [6, 7, 8]:  # Rainy season (slightly lower)
+                base_demand *= 0.9
+            
             # Add random noise
             noise = np.random.normal(0, base_demand * 0.15)
             delivery_count = max(0, int(base_demand + noise))
@@ -72,7 +92,7 @@ def generate_delivery_data(start_date, end_date, zones):
     
     return pd.DataFrame(records)
 
-def save_to_csv(df, filename='delivery_data.csv'):
+def save_to_csv(df, filename='delivery_data_2026.csv'):
     """Save dataframe to CSV"""
     df.to_csv(filename, index=False)
     print(f"\n✅ CSV saved to: {filename}")
@@ -84,25 +104,51 @@ def insert_to_mysql(df):
         conn = mysql.connector.connect(
             host='localhost',
             user='root',
-            password='root',  # Change if you have a password
+            password='root',  # Your MySQL password
             database='omniroute_dm'
         )
         cursor = conn.cursor()
         
+        # Optional: Clear existing data first
+        confirm = input("\nDo you want to clear existing delivery_records before inserting? (y/n): ")
+        if confirm.lower() == 'y':
+            cursor.execute("TRUNCATE TABLE delivery_records")
+            print("✅ Cleared existing delivery records")
+        
         print("\nInserting data into MySQL...")
         inserted = 0
+        batch_size = 1000
+        batch_data = []
+        
         for _, row in df.iterrows():
-            cursor.execute("""
+            batch_data.append((
+                row['zone_id'], 
+                row['delivery_timestamp'], 
+                row['delivery_count'], 
+                row['vehicle_type'], 
+                row['distance_km']
+            ))
+            inserted += 1
+            
+            if len(batch_data) >= batch_size:
+                cursor.executemany("""
+                    INSERT INTO delivery_records 
+                    (zone_id, delivery_timestamp, delivery_count, vehicle_type, distance_km)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, batch_data)
+                conn.commit()
+                print(f"  Inserted {inserted} records...")
+                batch_data = []
+        
+        # Insert remaining records
+        if batch_data:
+            cursor.executemany("""
                 INSERT INTO delivery_records 
                 (zone_id, delivery_timestamp, delivery_count, vehicle_type, distance_km)
                 VALUES (%s, %s, %s, %s, %s)
-            """, (row['zone_id'], row['delivery_timestamp'], row['delivery_count'], 
-                  row['vehicle_type'], row['distance_km']))
-            inserted += 1
-            if inserted % 1000 == 0:
-                print(f"  Inserted {inserted} records...")
+            """, batch_data)
+            conn.commit()
         
-        conn.commit()
         print(f"✅ Successfully inserted {inserted} records into MySQL database")
         
         cursor.close()
@@ -118,22 +164,71 @@ def insert_to_mysql(df):
         print("  4. Run the SQL setup script first")
         return False
 
+def generate_sample_verification(df):
+    """Print verification statistics"""
+    print("\n" + "=" * 60)
+    print("DATA VERIFICATION")
+    print("=" * 60)
+    
+    # Date range
+    print(f"\n📅 Date Range: {df['delivery_timestamp'].min()} to {df['delivery_timestamp'].max()}")
+    
+    # Records per zone
+    print("\n📍 Records per zone:")
+    zone_counts = df['zone_id'].value_counts()
+    for zone, count in zone_counts.items():
+        print(f"   {zone}: {count:,} records")
+    
+    # Delivery statistics
+    print("\n📊 Delivery Statistics:")
+    print(f"   Total Deliveries: {df['delivery_count'].sum():,}")
+    print(f"   Average per hour: {df['delivery_count'].mean():.1f}")
+    print(f"   Max per hour: {df['delivery_count'].max()}")
+    print(f"   Min per hour: {df['delivery_count'].min()}")
+    
+    # Peak hours
+    print("\n⏰ Peak Hours (all zones):")
+    df['hour'] = df['delivery_timestamp'].dt.hour
+    peak_hours = df.groupby('hour')['delivery_count'].mean().sort_values(ascending=False).head(5)
+    for hour, avg in peak_hours.items():
+        print(f"   {hour}:00 - {avg:.1f} avg deliveries")
+    
+    # Vehicle type distribution
+    print("\n🚗 Vehicle Type Distribution:")
+    vehicle_counts = df['vehicle_type'].value_counts()
+    for vtype, count in vehicle_counts.items():
+        print(f"   {vtype}: {count:,} records ({count/len(df)*100:.1f}%)")
+
 if __name__ == "__main__":
     print("=" * 60)
-    print("OmniRoute-DM Data Generator")
+    print("OmniRoute-DM Data Generator (2026 Data)")
     print("=" * 60)
     
     zones = ['ZONE_A', 'ZONE_B', 'ZONE_C', 'ZONE_D', 'ZONE_E']
     
-    # Generate 6 months of hourly data
-    print("\nGenerating synthetic delivery data...")
-    df = generate_delivery_data('2024-01-01', '2024-06-30', zones)
+    # Generate data from January 1, 2026 to May 8, 2026 (today)
+    # This gives approximately 5 months of hourly data
+    start_date = '2026-01-01'
+    end_date = '2026-05-08'  # Today's date
     
-    print(f"\n✅ Generated {len(df)} delivery records")
-    print(f"\nSample data:")
+    print(f"\n📅 Generating data from {start_date} to {end_date}")
+    print(f"   (5 months of historical data)")
+    
+    # Generate synthetic delivery data
+    print("\n🔄 Generating synthetic delivery data...")
+    df = generate_delivery_data(start_date, end_date, zones)
+    
+    print(f"\n✅ Generated {len(df):,} delivery records")
+    
+    # Sample data preview
+    print("\n📋 Sample data (first 10 rows):")
     print(df.head(10))
-    print(f"\nData summary:")
+    
+    print("\n📈 Data summary:")
     print(df.describe())
+    
+    # Generate verification stats
+    generate_sample_verification(df)
     
     # Save to CSV
     csv_path = save_to_csv(df)
@@ -145,10 +240,16 @@ if __name__ == "__main__":
         print("\n" + "=" * 60)
         print("✅ DATA GENERATION COMPLETE!")
         print("=" * 60)
-        print(f"\nNext steps:")
-        print("1. Run: python backend/models/train_model.py")
-        print("2. Run: python backend/app.py")
+        print(f"\n📁 CSV saved to: {csv_path}")
+        print(f"💾 Database: omniroute_dm")
+        print(f"📊 Records inserted: {len(df):,}")
+        print(f"\n📅 Data covers: {start_date} to {end_date}")
+        print(f"   (Approximately 5 months of hourly data)")
+        print(f"\n🚀 Next steps:")
+        print("   1. Run: python train_standalone.py")
+        print("   2. Run: python backend/app.py")
+        print("   3. Open index.html in browser")
     else:
         print("\n⚠️ CSV file saved but MySQL insertion failed.")
-        print(f"CSV location: {csv_path}")
-        print("You can still use the CSV file for training by modifying train_model.py")
+        print(f"📁 CSV location: {csv_path}")
+        print("💡 You can still use the CSV file for training by modifying train_model.py")

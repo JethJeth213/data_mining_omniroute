@@ -1,238 +1,1321 @@
 // API Configuration
 const API_BASE_URL = 'http://localhost:5000/api';
 
-// DOM Elements
-const zoneSelect = document.getElementById('zoneSelect');
-const dateTimeSelect = document.getElementById('dateTimeSelect');
-const predictBtn = document.getElementById('predictBtn');
-const resultsPanel = document.getElementById('resultsPanel');
-const loadingOverlay = document.getElementById('loadingOverlay');
-const statsSection = document.getElementById('statsSection');
+// Current page tracking
+let currentPage = 'dashboard';
 
-// Set default datetime (next hour)
-function setDefaultDateTime() {
+// DOM Elements
+let contentArea;
+
+// Initialize
+document.addEventListener('DOMContentLoaded', () => {
+    contentArea = document.getElementById('contentArea');
+    setupNavigation();
+    loadPage('dashboard');
+});
+
+// Navigation setup
+function setupNavigation() {
+    document.querySelectorAll('.nav-item').forEach(item => {
+        item.addEventListener('click', (e) => {
+            e.preventDefault();
+            const page = item.dataset.page;
+            if (page) {
+                loadPage(page);
+                document.querySelectorAll('.nav-item').forEach(nav => nav.classList.remove('active'));
+                item.classList.add('active');
+                document.getElementById('pageTitle').innerText = item.querySelector('span').innerText;
+            }
+        });
+    });
+}
+
+// Load page content
+async function loadPage(page) {
+    currentPage = page;
+    showLoading();
+    
+    switch(page) {
+        case 'dashboard':
+            await loadDashboard();
+            break;
+        case 'forecast':
+            await loadForecastPage();
+            break;
+        case 'dispatch':
+            await loadDispatchPage();
+            break;
+        case 'vehicles':
+            await loadVehiclesPage();
+            break;
+        case 'users':
+            await loadUsersPage();
+            break;
+    }
+    
+    hideLoading();
+}
+
+// ============ DASHBOARD ============
+async function loadDashboard() {
+    try {
+        const statsResponse = await fetch(`${API_BASE_URL}/dashboard/stats`);
+        const statsData = await statsResponse.json();
+        
+        const zonesResponse = await fetch(`${API_BASE_URL}/zones`);
+        const zonesData = await zonesResponse.json();
+        
+        const assignmentsResponse = await fetch(`${API_BASE_URL}/dispatch/assignments?status=enroute,assigned`);
+        const assignmentsData = await assignmentsResponse.json();
+        
+        contentArea.innerHTML = `
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-icon">🚚</div>
+                    <div class="stat-value">${statsData.stats.total_vehicles || 0}</div>
+                    <div class="stat-label">Total Vehicles</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon">👥</div>
+                    <div class="stat-value">${getUserCount(statsData.stats.users_by_role)}</div>
+                    <div class="stat-label">Active Users</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon">📦</div>
+                    <div class="stat-value">${statsData.stats.today_assignments || 0}</div>
+                    <div class="stat-label">Today's Dispatches</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon">🚛</div>
+                    <div class="stat-value">${statsData.stats.active_drivers_today || 0}</div>
+                    <div class="stat-label">Active Drivers Today</div>
+                </div>
+            </div>
+            
+            <div class="data-table">
+                <div class="table-header">
+                    <h3>Active Dispatches</h3>
+                </div>
+                <table>
+                    <thead>
+                        <tr><th>Zone</th><th>Time</th><th>Predicted</th><th>Status</th><th>Assigned</th></tr>
+                    </thead>
+                    <tbody>
+                        ${renderActiveDispatches(assignmentsData.assignments || [])}
+                    </tbody>
+                </table>
+            </div>
+            
+            <div class="data-table" style="margin-top: 30px;">
+                <div class="table-header">
+                    <h3>Delivery Zones</h3>
+                </div>
+                <table>
+                    <thead>
+                        <tr><th>Zone</th><th>Name</th><th>Base Vehicles</th><th>Normal Threshold</th><th>High Threshold</th></tr>
+                    </thead>
+                    <tbody>
+                        ${(zonesData.zones || []).map(zone => `
+                            <tr>
+                                <td><strong>${zone.zone_id}</strong></td>
+                                <td>${zone.zone_name}</td>
+                                <td>${zone.base_vehicles}</td>
+                                <td>${zone.threshold_normal}</td>
+                                <td>${zone.threshold_high}</td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            </div>
+        `;
+    } catch (error) {
+        console.error('Error loading dashboard:', error);
+        contentArea.innerHTML = '<div class="error">Error loading dashboard data</div>';
+    }
+}
+
+function getUserCount(usersByRole) {
+    if (!usersByRole) return 0;
+    return usersByRole.reduce((sum, role) => sum + role.count, 0);
+}
+
+function renderActiveDispatches(assignments) {
+    if (!assignments.length) {
+        return '<tr><td colspan="5">No active dispatches</td></tr>';
+    }
+    return assignments.map(ass => `
+        <tr>
+            <td>${ass.zone_id}</td>
+            <td>${new Date(ass.dispatch_datetime).toLocaleString()}</td>
+            <td>${ass.predicted_deliveries || '-'}</td>
+            <td><span class="status-badge status-${ass.dispatch_status}">${ass.dispatch_status}</span></td>
+            <td>${ass.assigned_vehicles || '-'}</td>
+        </tr>
+    `).join('');
+}
+
+// ============ DEMAND FORECAST PAGE ============
+async function loadForecastPage() {
+    // Get zones first
+    const zonesResponse = await fetch(`${API_BASE_URL}/zones`);
+    const zonesData = await zonesResponse.json();
+    
+    // Set default datetime
     const now = new Date();
     now.setHours(now.getHours() + 1);
     now.setMinutes(0);
-    now.setSeconds(0);
+    const defaultDateTime = now.toISOString().slice(0, 16);
     
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const day = String(now.getDate()).padStart(2, '0');
-    const hours = String(now.getHours()).padStart(2, '0');
-    
-    dateTimeSelect.value = `${year}-${month}-${day}T${hours}:00`;
-}
-
-// Quick select buttons
-document.querySelectorAll('.quick-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-        const hours = parseInt(btn.dataset.hours);
-        const currentDate = dateTimeSelect.value ? new Date(dateTimeSelect.value) : new Date();
-        currentDate.setHours(currentDate.getHours() + hours);
+    contentArea.innerHTML = `
+        <div class="control-panel">
+            <h3>🎯 Demand Prediction</h3>
+            <p>Select zone and time for demand forecast</p>
+            
+            <div class="form-group">
+                <label>📍 Delivery Zone</label>
+                <select id="zoneSelect" class="form-control">
+                    <option value="">Select a zone...</option>
+                    ${(zonesData.zones || []).map(zone => `
+                        <option value="${zone.zone_id}">${zone.zone_id} - ${zone.zone_name}</option>
+                    `).join('')}
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label>⏰ Date & Time</label>
+                <input type="datetime-local" id="dateTimeSelect" class="form-control" value="${defaultDateTime}">
+            </div>
+            
+            <div class="quick-select">
+                <label>Quick Select:</label>
+                <div class="quick-buttons">
+                    <button class="quick-btn" data-hours="1">+1 Hour</button>
+                    <button class="quick-btn" data-hours="3">+3 Hours</button>
+                    <button class="quick-btn" data-hours="6">+6 Hours</button>
+                    <button class="quick-btn" data-hours="12">+12 Hours</button>
+                    <button class="quick-btn" data-hours="24">+24 Hours</button>
+                </div>
+            </div>
+            
+            <button id="predictBtn" class="predict-btn">🔮 Predict Demand</button>
+        </div>
         
-        const year = currentDate.getFullYear();
-        const month = String(currentDate.getMonth() + 1).padStart(2, '0');
-        const day = String(currentDate.getDate()).padStart(2, '0');
-        const hoursStr = String(currentDate.getHours()).padStart(2, '0');
-        
-        dateTimeSelect.value = `${year}-${month}-${day}T${hoursStr}:00`;
-    });
-});
-
-// Zone selection change
-zoneSelect.addEventListener('change', async () => {
-    const zoneId = zoneSelect.value;
-    if (zoneId) {
-        await loadHistoricalStats(zoneId);
-    } else {
-        statsSection.style.display = 'none';
-    }
-});
-
-// Load historical stats
-async function loadHistoricalStats(zoneId) {
-    try {
-        const response = await fetch(`${API_BASE_URL}/historical_stats?zone_id=${zoneId}&days=30`);
-        const data = await response.json();
-        
-        if (!data.error) {
-            displayHistoricalStats(data);
-            statsSection.style.display = 'block';
-        }
-    } catch (error) {
-        console.error('Error loading stats:', error);
-    }
-}
-
-// Display historical stats
-function displayHistoricalStats(stats) {
-    const statsGrid = document.getElementById('statsGrid');
-    statsGrid.innerHTML = `
-        <div class="stat-item">
-            <div class="stat-label">Total Deliveries (30 days)</div>
-            <div class="stat-value">${stats.total_deliveries.toLocaleString()}</div>
-        </div>
-        <div class="stat-item">
-            <div class="stat-label">Avg Daily Deliveries</div>
-            <div class="stat-value">${Math.round(stats.avg_daily_deliveries)}</div>
-        </div>
-        <div class="stat-item">
-            <div class="stat-label">Avg Hourly Deliveries</div>
-            <div class="stat-value">${stats.avg_hourly_deliveries.toFixed(1)}</div>
-        </div>
-        <div class="stat-item">
-            <div class="stat-label">Peak Hour Record</div>
-            <div class="stat-value">${stats.max_hourly}</div>
-        </div>
-        <div class="stat-item">
-            <div class="stat-label">Peak Hours (avg)</div>
-            <div class="stat-value">${Object.entries(stats.peak_hours).map(([hour, val]) => `${hour}:00 (${Math.round(val)})`).join(', ')}</div>
+        <div id="resultsPanel" class="results-panel" style="display: none;">
+            <h3>📈 Prediction Results</h3>
+            <div id="predictionResults"></div>
         </div>
     `;
+    
+    // Setup quick buttons
+    document.querySelectorAll('.quick-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const hours = parseInt(btn.dataset.hours);
+            const datetimeInput = document.getElementById('dateTimeSelect');
+            let date = new Date(datetimeInput.value);
+            if (isNaN(date.getTime())) date = new Date();
+            date.setHours(date.getHours() + hours);
+            datetimeInput.value = date.toISOString().slice(0, 16);
+        });
+    });
+    
+    // Predict button
+    document.getElementById('predictBtn').addEventListener('click', async () => {
+        const zoneId = document.getElementById('zoneSelect').value;
+        const datetime = document.getElementById('dateTimeSelect').value;
+        
+        if (!zoneId) {
+            alert('Please select a zone');
+            return;
+        }
+        
+        showLoading();
+        
+        try {
+            const response = await fetch(`${API_BASE_URL}/predict`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    zone_id: zoneId,
+                    datetime: datetime.replace('T', ' ') + ':00'
+                })
+            });
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                displayPrediction(data.prediction);
+            } else {
+                alert('Error: ' + (data.error || 'Prediction failed'));
+            }
+        } catch (error) {
+            alert('Error connecting to server');
+        } finally {
+            hideLoading();
+        }
+    });
 }
 
-// Make prediction
-async function makePrediction() {
-    const zoneId = zoneSelect.value;
-    const datetime = dateTimeSelect.value;
+function displayPrediction(prediction) {
+    const resultsPanel = document.getElementById('resultsPanel');
+    const resultsDiv = document.getElementById('predictionResults');
     
-    if (!zoneId) {
-        alert('Please select a delivery zone');
-        return;
-    }
+    const demandColor = prediction.demand_level === 'Peak Risk' ? '#dc2626' : 
+                       prediction.demand_level === 'High Demand' ? '#ea580c' : '#16a34a';
     
-    if (!datetime) {
-        alert('Please select a date and time');
-        return;
-    }
+    resultsDiv.innerHTML = `
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <div class="metric-label">Predicted Deliveries</div>
+                <div class="metric-value">${prediction.predicted_deliveries}</div>
+                <div class="metric-sub">95% CI: ${prediction.confidence_interval[0]} - ${prediction.confidence_interval[1]}</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Demand Level</div>
+                <div class="metric-value" style="color: ${demandColor}">${prediction.demand_level}</div>
+                <div class="metric-sub">${prediction.demand_level === 'Peak Risk' ? '⚠️ Prepare all resources' : 
+                                         prediction.demand_level === 'High Demand' ? '📈 Increase capacity' : '✅ Normal operations'}</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Zone</div>
+                <div class="metric-value">${prediction.zone_id}</div>
+                <div class="metric-sub">${new Date(prediction.datetime).toLocaleString()}</div>
+            </div>
+        </div>
+        
+        <div class="recommendation-card">
+            <div class="rec-header">🚚 Dispatch Recommendation</div>
+            <div class="rec-content">${prediction.recommendation}</div>
+            <div class="vehicle-breakdown">
+                <div class="vehicle-item">🏍️ ${prediction.vehicle_breakdown.motorcycles} Motorcycles</div>
+                <div class="vehicle-item">🚐 ${prediction.vehicle_breakdown.vans} Vans</div>
+                <div class="vehicle-item">🚚 ${prediction.vehicle_breakdown.trucks} Trucks</div>
+            </div>
+        </div>
+        
+        <div class="action-buttons" style="display: flex; gap: 10px; margin-top: 20px;">
+            <button onclick="createDispatchFromPrediction()" class="btn-primary">Create Dispatch Assignment</button>
+        </div>
+    `;
     
-    // Convert datetime-local to proper format
-    const formattedDateTime = datetime.replace('T', ' ') + ':00';
+    resultsPanel.style.display = 'block';
     
-    // Show loading
-    loadingOverlay.style.display = 'flex';
+    // Store prediction for dispatch creation
+    window.lastPrediction = prediction;
+}
+
+window.createDispatchFromPrediction = async function() {
+    if (!window.lastPrediction) return;
     
+    const pred = window.lastPrediction;
+    
+    showLoading();
     try {
-        const response = await fetch(`${API_BASE_URL}/predict`, {
+        const response = await fetch(`${API_BASE_URL}/dispatch/assignments`, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                zone_id: zoneId,
-                datetime: formattedDateTime
+                zone_id: pred.zone_id,
+                dispatch_datetime: pred.datetime,
+                predicted_deliveries: pred.predicted_deliveries,
+                demand_level: pred.demand_level,
+                assigned_vehicles: `${pred.vehicle_breakdown.motorcycles} MC, ${pred.vehicle_breakdown.vans} Vans, ${pred.vehicle_breakdown.trucks} Trucks`,
+                dispatch_status: 'planned',
+                notes: `Auto-created from demand prediction`,
+                created_by: 1
             })
         });
         
         const data = await response.json();
-        
         if (data.success) {
-            displayPrediction(data.prediction);
+            alert('Dispatch assignment created successfully!');
+            loadPage('dispatch');
         } else {
-            alert('Error: ' + (data.error || 'Failed to get prediction'));
+            alert('Error: ' + data.error);
         }
     } catch (error) {
-        console.error('Prediction error:', error);
-        alert('Error connecting to server. Make sure the backend is running.');
+        alert('Error creating assignment');
     } finally {
-        loadingOverlay.style.display = 'none';
+        hideLoading();
     }
-}
+};
 
-// Display prediction results
-function displayPrediction(prediction) {
-    // Show results panel
-    resultsPanel.style.display = 'block';
+// ============ FLEET DISPATCH PAGE ============
+async function loadDispatchPage() {
+    const zonesResponse = await fetch(`${API_BASE_URL}/zones`);
+    const zonesData = await zonesResponse.json();
     
-    // Update timestamp
-    document.getElementById('predictionTimestamp').innerHTML = 
-        `<strong>Predicted for:</strong> ${prediction.datetime}`;
+    // Load assignments
+    await refreshDispatchTable();
     
-    // Update metrics
-    document.getElementById('predictedCount').innerHTML = prediction.predicted_deliveries;
-    document.getElementById('confidenceInterval').innerHTML = 
-        `95% CI: ${prediction.confidence_interval[0]} - ${prediction.confidence_interval[1]}`;
-    
-    // Update demand level with icon
-    const demandLevelElem = document.getElementById('demandLevel');
-    const demandIconElem = document.getElementById('demandLevelIcon');
-    
-    demandLevelElem.innerHTML = prediction.demand_level;
-    
-    if (prediction.demand_level === 'Peak Risk') {
-        demandIconElem.innerHTML = '⚠️ EXTREME - Prepare all resources';
-        demandLevelElem.style.color = '#f44336';
-    } else if (prediction.demand_level === 'High Demand') {
-        demandIconElem.innerHTML = '📈 Increase capacity needed';
-        demandLevelElem.style.color = '#FF9800';
-    } else {
-        demandIconElem.innerHTML = '✅ Normal operations';
-        demandLevelElem.style.color = '#4CAF50';
-    }
-    
-    // Update zone name
-    const zoneNames = {
-        'ZONE_A': 'Zone A - Downtown',
-        'ZONE_B': 'Zone B - North District',
-        'ZONE_C': 'Zone C - South District',
-        'ZONE_D': 'Zone D - East Commercial',
-        'ZONE_E': 'Zone E - West Residential'
-    };
-    document.getElementById('zoneName').innerHTML = zoneNames[prediction.zone_id] || prediction.zone_id;
-    
-    // Update recommendation
-    document.getElementById('recommendation').innerHTML = prediction.recommendation;
-    
-    // Update vehicle breakdown
-    const vehicles = prediction.vehicle_breakdown;
-    const vehicleBreakdownDiv = document.getElementById('vehicleBreakdown');
-    vehicleBreakdownDiv.innerHTML = `
-        <div class="vehicle-item vehicle-motorcycle">
-            🏍️ ${vehicles.motorcycles} Motorcycles
+    contentArea.innerHTML = `
+        <div class="filter-bar">
+            <div class="filter-group">
+                <label>Zone</label>
+                <select id="dispatchZoneFilter">
+                    <option value="">All Zones</option>
+                    ${(zonesData.zones || []).map(zone => `
+                        <option value="${zone.zone_id}">${zone.zone_id}</option>
+                    `).join('')}
+                </select>
+            </div>
+            <div class="filter-group">
+                <label>Status</label>
+                <select id="dispatchStatusFilter">
+                    <option value="">All Status</option>
+                    <option value="planned">Planned</option>
+                    <option value="assigned">Assigned</option>
+                    <option value="enroute">En Route</option>
+                    <option value="completed">Completed</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <label>Date</label>
+                <input type="date" id="dispatchDateFilter">
+            </div>
+            <div class="filter-group">
+                <button id="applyDispatchFilter" class="btn-secondary">Apply Filter</button>
+                <button id="clearDispatchFilter" class="btn-secondary">Clear</button>
+            </div>
+            <div style="flex:1"></div>
+            <button id="newDispatchBtn" class="btn-primary">+ New Dispatch</button>
         </div>
-        <div class="vehicle-item vehicle-van">
-            🚐 ${vehicles.vans} Vans
-        </div>
-        <div class="vehicle-item vehicle-truck">
-            🚚 ${vehicles.trucks} Trucks
+        
+        <div class="data-table">
+            <div class="table-header">
+                <h3>Dispatch Assignments</h3>
+            </div>
+            <div id="dispatchTableContainer">
+                <!-- Table loaded dynamically -->
+            </div>
         </div>
     `;
     
-    // Update full message
-    document.getElementById('fullMessage').innerHTML = prediction.full_message.replace(/\n/g, '<br>');
-    
-    // Scroll to results
-    resultsPanel.scrollIntoView({ behavior: 'smooth' });
+    // Setup event listeners
+    document.getElementById('applyDispatchFilter').addEventListener('click', refreshDispatchTable);
+    document.getElementById('clearDispatchFilter').addEventListener('click', () => {
+        document.getElementById('dispatchZoneFilter').value = '';
+        document.getElementById('dispatchStatusFilter').value = '';
+        document.getElementById('dispatchDateFilter').value = '';
+        refreshDispatchTable();
+    });
+    document.getElementById('newDispatchBtn').addEventListener('click', showNewDispatchModal);
 }
 
-// Event listeners
-predictBtn.addEventListener('click', makePrediction);
-
-// Initialize
-setDefaultDateTime();
-
-// Check API health on load
-async function checkHealth() {
+async function refreshDispatchTable() {
+    const zone = document.getElementById('dispatchZoneFilter')?.value || '';
+    const status = document.getElementById('dispatchStatusFilter')?.value || '';
+    const date = document.getElementById('dispatchDateFilter')?.value || '';
+    
+    let url = `${API_BASE_URL}/dispatch/assignments`;
+    const params = new URLSearchParams();
+    if (zone) params.append('zone_id', zone);
+    if (status) params.append('status', status);
+    if (date) params.append('date', date);
+    if (params.toString()) url += '?' + params.toString();
+    
     try {
-        const response = await fetch(`${API_BASE_URL}/health`);
+        const response = await fetch(url);
         const data = await response.json();
         
-        if (!data.models_loaded) {
-            console.warn('Models not loaded. Please run train_model.py first.');
-        }
+        const container = document.getElementById('dispatchTableContainer');
+        if (!container) return;
+        
+        container.innerHTML = `
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Zone</th>
+                        <th>Date/Time</th>
+                        <th>Predicted</th>
+                        <th>Actual</th>
+                        <th>Demand Level</th>
+                        <th>Assigned Vehicles</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${(data.assignments || []).map(ass => `
+                        <tr>
+                            <td>${ass.assignment_id}</td>
+                            <td><strong>${ass.zone_id}</strong><br><small>${ass.zone_name || ''}</small></td>
+                            <td>${new Date(ass.dispatch_datetime).toLocaleString()}</td>
+                            <td>${ass.predicted_deliveries || '-'}</td>
+                            <td>${ass.actual_deliveries || '-'}</td>
+                            <td><span class="status-badge" style="background:${getDemandColor(ass.demand_level)}20; color:${getDemandColor(ass.demand_level)}">${ass.demand_level || '-'}</span></td>
+                            <td>${ass.assigned_vehicles || '-'}</td>
+                            <td><span class="status-badge status-${ass.dispatch_status}">${ass.dispatch_status}</span></td>
+                            <td>
+                                <button class="btn-secondary btn-sm" onclick="editDispatch(${ass.assignment_id})">Edit</button>
+                                <button class="btn-danger btn-sm" onclick="deleteDispatch(${ass.assignment_id})">Delete</button>
+                            </td>
+                        </tr>
+                    `).join('')}
+                    ${(data.assignments || []).length === 0 ? '<tr><td colspan="9">No dispatch assignments found</td></tr>' : ''}
+                </tbody>
+            </table>
+        `;
     } catch (error) {
-        console.error('Backend not running. Please start the Flask server.');
+        console.error('Error loading dispatch:', error);
     }
 }
 
-checkHealth();
+function getDemandColor(demandLevel) {
+    if (demandLevel === 'Peak Risk') return '#dc2626';
+    if (demandLevel === 'High Demand') return '#ea580c';
+    return '#16a34a';
+}
 
-// Keyboard shortcut (Enter on zone or datetime)
-zoneSelect.addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') makePrediction();
+window.editDispatch = async function(id) {
+    // Fetch assignment details and show edit modal
+    const response = await fetch(`${API_BASE_URL}/dispatch/assignments`);
+    const data = await response.json();
+    const assignment = data.assignments.find(a => a.assignment_id === id);
+    
+    if (assignment) {
+        showEditDispatchModal(assignment);
+    }
+};
+
+window.deleteDispatch = async function(id) {
+    if (confirm('Are you sure you want to delete this dispatch assignment?')) {
+        try {
+            const response = await fetch(`${API_BASE_URL}/dispatch/assignments/${id}`, {
+                method: 'DELETE'
+            });
+            const data = await response.json();
+            if (data.success) {
+                refreshDispatchTable();
+            } else {
+                alert('Error deleting assignment');
+            }
+        } catch (error) {
+            alert('Error deleting assignment');
+        }
+    }
+};
+
+function showNewDispatchModal() {
+    showModal('Create Dispatch Assignment', `
+        <div class="form-group">
+            <label>Zone ID</label>
+            <input type="text" id="dispatchZoneId" placeholder="e.g., ZONE_A">
+        </div>
+        <div class="form-group">
+            <label>Date & Time</label>
+            <input type="datetime-local" id="dispatchDateTime">
+        </div>
+        <div class="form-group">
+            <label>Predicted Deliveries</label>
+            <input type="number" id="dispatchPredicted" placeholder="0">
+        </div>
+        <div class="form-group">
+            <label>Demand Level</label>
+            <select id="dispatchDemandLevel">
+                <option value="Normal Demand">Normal Demand</option>
+                <option value="High Demand">High Demand</option>
+                <option value="Peak Risk">Peak Risk</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Assigned Vehicles</label>
+            <input type="text" id="dispatchVehicles" placeholder="e.g., 3 MC, 1 Van">
+        </div>
+        <div class="form-group">
+            <label>Status</label>
+            <select id="dispatchStatus">
+                <option value="planned">Planned</option>
+                <option value="assigned">Assigned</option>
+                <option value="enroute">En Route</option>
+                <option value="completed">Completed</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Notes</label>
+            <textarea id="dispatchNotes" rows="3"></textarea>
+        </div>
+        <div class="form-actions">
+            <button onclick="closeModal()" class="btn-secondary">Cancel</button>
+            <button onclick="saveDispatch()" class="btn-primary">Save</button>
+        </div>
+    `);
+}
+
+function showEditDispatchModal(assignment) {
+    showModal('Edit Dispatch Assignment', `
+        <div class="form-group">
+            <label>Zone ID</label>
+            <input type="text" id="dispatchZoneId" value="${assignment.zone_id || ''}">
+        </div>
+        <div class="form-group">
+            <label>Date & Time</label>
+            <input type="datetime-local" id="dispatchDateTime" value="${assignment.dispatch_datetime ? assignment.dispatch_datetime.slice(0, 16) : ''}">
+        </div>
+        <div class="form-group">
+            <label>Predicted Deliveries</label>
+            <input type="number" id="dispatchPredicted" value="${assignment.predicted_deliveries || ''}">
+        </div>
+        <div class="form-group">
+            <label>Actual Deliveries</label>
+            <input type="number" id="dispatchActual" value="${assignment.actual_deliveries || ''}">
+        </div>
+        <div class="form-group">
+            <label>Demand Level</label>
+            <select id="dispatchDemandLevel">
+                <option value="Normal Demand" ${assignment.demand_level === 'Normal Demand' ? 'selected' : ''}>Normal Demand</option>
+                <option value="High Demand" ${assignment.demand_level === 'High Demand' ? 'selected' : ''}>High Demand</option>
+                <option value="Peak Risk" ${assignment.demand_level === 'Peak Risk' ? 'selected' : ''}>Peak Risk</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Assigned Vehicles</label>
+            <input type="text" id="dispatchVehicles" value="${assignment.assigned_vehicles || ''}">
+        </div>
+        <div class="form-group">
+            <label>Status</label>
+            <select id="dispatchStatus">
+                <option value="planned" ${assignment.dispatch_status === 'planned' ? 'selected' : ''}>Planned</option>
+                <option value="assigned" ${assignment.dispatch_status === 'assigned' ? 'selected' : ''}>Assigned</option>
+                <option value="enroute" ${assignment.dispatch_status === 'enroute' ? 'selected' : ''}>En Route</option>
+                <option value="completed" ${assignment.dispatch_status === 'completed' ? 'selected' : ''}>Completed</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Notes</label>
+            <textarea id="dispatchNotes" rows="3">${assignment.notes || ''}</textarea>
+        </div>
+        <div class="form-actions">
+            <button onclick="closeModal()" class="btn-secondary">Cancel</button>
+            <button onclick="updateDispatch(${assignment.assignment_id})" class="btn-primary">Update</button>
+        </div>
+    `);
+}
+
+window.saveDispatch = async function() {
+    const data = {
+        zone_id: document.getElementById('dispatchZoneId').value,
+        dispatch_datetime: document.getElementById('dispatchDateTime').value.replace('T', ' ') + ':00',
+        predicted_deliveries: parseInt(document.getElementById('dispatchPredicted').value) || null,
+        demand_level: document.getElementById('dispatchDemandLevel').value,
+        assigned_vehicles: document.getElementById('dispatchVehicles').value,
+        dispatch_status: document.getElementById('dispatchStatus').value,
+        notes: document.getElementById('dispatchNotes').value,
+        created_by: 1
+    };
+    
+    try {
+        const response = await fetch(`${API_BASE_URL}/dispatch/assignments`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        const result = await response.json();
+        if (result.success) {
+            closeModal();
+            refreshDispatchTable();
+        } else {
+            alert('Error: ' + result.error);
+        }
+    } catch (error) {
+        alert('Error saving dispatch');
+    }
+};
+
+window.updateDispatch = async function(id) {
+    const data = {
+        zone_id: document.getElementById('dispatchZoneId').value,
+        dispatch_datetime: document.getElementById('dispatchDateTime').value.replace('T', ' ') + ':00',
+        predicted_deliveries: parseInt(document.getElementById('dispatchPredicted').value) || null,
+        actual_deliveries: parseInt(document.getElementById('dispatchActual')?.value) || null,
+        demand_level: document.getElementById('dispatchDemandLevel').value,
+        assigned_vehicles: document.getElementById('dispatchVehicles').value,
+        dispatch_status: document.getElementById('dispatchStatus').value,
+        notes: document.getElementById('dispatchNotes').value
+    };
+    
+    if (data.dispatch_status === 'completed') {
+        data.completed_at = new Date().toISOString().slice(0, 19).replace('T', ' ');
+    }
+    
+    try {
+        const response = await fetch(`${API_BASE_URL}/dispatch/assignments/${id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        const result = await response.json();
+        if (result.success) {
+            closeModal();
+            refreshDispatchTable();
+        } else {
+            alert('Error: ' + result.error);
+        }
+    } catch (error) {
+        alert('Error updating dispatch');
+    }
+};
+
+// ============ VEHICLE MANAGEMENT PAGE ============
+async function loadVehiclesPage() {
+    const zonesResponse = await fetch(`${API_BASE_URL}/zones`);
+    const zonesData = await zonesResponse.json();
+    
+    await refreshVehiclesTable();
+    
+    contentArea.innerHTML = `
+        <div class="filter-bar">
+            <div class="filter-group">
+                <label>Zone</label>
+                <select id="vehicleZoneFilter">
+                    <option value="">All Zones</option>
+                    ${(zonesData.zones || []).map(zone => `
+                        <option value="${zone.zone_id}">${zone.zone_id}</option>
+                    `).join('')}
+                </select>
+            </div>
+            <div class="filter-group">
+                <label>Status</label>
+                <select id="vehicleStatusFilter">
+                    <option value="">All Status</option>
+                    <option value="available">Available</option>
+                    <option value="assigned">Assigned</option>
+                    <option value="maintenance">Maintenance</option>
+                    <option value="repair">Repair</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <label>Type</label>
+                <select id="vehicleTypeFilter">
+                    <option value="">All Types</option>
+                    <option value="motorcycle">Motorcycle</option>
+                    <option value="van">Van</option>
+                    <option value="truck">Truck</option>
+                    <option value="ebike">E-Bike</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <button id="applyVehicleFilter" class="btn-secondary">Apply Filter</button>
+                <button id="clearVehicleFilter" class="btn-secondary">Clear</button>
+            </div>
+            <div style="flex:1"></div>
+            <button id="newVehicleBtn" class="btn-primary">+ Add Vehicle</button>
+        </div>
+        
+        <div class="data-table">
+            <div class="table-header">
+                <h3>Vehicle Fleet</h3>
+            </div>
+            <div id="vehiclesTableContainer">
+                <!-- Table loaded dynamically -->
+            </div>
+        </div>
+    `;
+    
+    document.getElementById('applyVehicleFilter').addEventListener('click', refreshVehiclesTable);
+    document.getElementById('clearVehicleFilter').addEventListener('click', () => {
+        document.getElementById('vehicleZoneFilter').value = '';
+        document.getElementById('vehicleStatusFilter').value = '';
+        document.getElementById('vehicleTypeFilter').value = '';
+        refreshVehiclesTable();
+    });
+    document.getElementById('newVehicleBtn').addEventListener('click', showNewVehicleModal);
+}
+
+async function refreshVehiclesTable() {
+    const zone = document.getElementById('vehicleZoneFilter')?.value || '';
+    const status = document.getElementById('vehicleStatusFilter')?.value || '';
+    const type = document.getElementById('vehicleTypeFilter')?.value || '';
+    
+    let url = `${API_BASE_URL}/vehicles`;
+    const params = new URLSearchParams();
+    if (zone) params.append('zone_id', zone);
+    if (status) params.append('status', status);
+    if (type) params.append('vehicle_type', type);
+    if (params.toString()) url += '?' + params.toString();
+    
+    try {
+        const response = await fetch(url);
+        const data = await response.json();
+        
+        const container = document.getElementById('vehiclesTableContainer');
+        if (!container) return;
+        
+        container.innerHTML = `
+            <table>
+                <thead>
+                    <tr>
+                        <th>Code</th>
+                        <th>Type</th>
+                        <th>Plate Number</th>
+                        <th>Capacity (kg)</th>
+                        <th>Fuel Type</th>
+                        <th>Zone</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${(data.vehicles || []).map(vehicle => `
+                        <tr>
+                            <td><strong>${vehicle.vehicle_code}</strong></td>
+                            <td>${getVehicleIcon(vehicle.vehicle_type)} ${vehicle.vehicle_type}</td>
+                            <td>${vehicle.plate_number || '-'}</td>
+                            <td>${vehicle.capacity_kg || 0}</td>
+                            <td>${vehicle.fuel_type || '-'}</td>
+                            <td>${vehicle.assigned_zone || '-'}</td>
+                            <td><span class="status-badge status-${vehicle.status}">${vehicle.status}</span></td>
+                            <td>
+                                <button class="btn-secondary btn-sm" onclick="editVehicle(${vehicle.vehicle_id})">Edit</button>
+                                <button class="btn-danger btn-sm" onclick="deleteVehicle(${vehicle.vehicle_id})">Delete</button>
+                            </td>
+                        </tr>
+                    `).join('')}
+                    ${(data.vehicles || []).length === 0 ? '<tr><td colspan="8">No vehicles found</td></tr>' : ''}
+                </tbody>
+            </table>
+        `;
+    } catch (error) {
+        console.error('Error loading vehicles:', error);
+    }
+}
+
+function getVehicleIcon(type) {
+    const icons = {
+        'motorcycle': '🏍️',
+        'van': '🚐',
+        'truck': '🚚',
+        'ebike': '🛵',
+        'cargo_bike': '🚲'
+    };
+    return icons[type] || '🚗';
+}
+
+function showNewVehicleModal() {
+    showModal('Add New Vehicle', `
+        <div class="form-group">
+            <label>Vehicle Code *</label>
+            <input type="text" id="vehicleCode" placeholder="e.g., MC-001">
+        </div>
+        <div class="form-group">
+            <label>Vehicle Type *</label>
+            <select id="vehicleType">
+                <option value="motorcycle">Motorcycle</option>
+                <option value="van">Van</option>
+                <option value="truck">Truck</option>
+                <option value="ebike">E-Bike</option>
+                <option value="cargo_bike">Cargo Bike</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Plate Number</label>
+            <input type="text" id="vehiclePlate" placeholder="ABC-1234">
+        </div>
+        <div class="form-group">
+            <label>Capacity (kg)</label>
+            <input type="number" id="vehicleCapacityKg" value="0">
+        </div>
+        <div class="form-group">
+            <label>Fuel Type</label>
+            <select id="vehicleFuelType">
+                <option value="gasoline">Gasoline</option>
+                <option value="diesel">Diesel</option>
+                <option value="electric">Electric</option>
+                <option value="hybrid">Hybrid</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Assigned Zone</label>
+            <input type="text" id="vehicleZone" placeholder="ZONE_A">
+        </div>
+        <div class="form-group">
+            <label>Status</label>
+            <select id="vehicleStatus">
+                <option value="available">Available</option>
+                <option value="assigned">Assigned</option>
+                <option value="maintenance">Maintenance</option>
+                <option value="repair">Repair</option>
+            </select>
+        </div>
+        <div class="form-actions">
+            <button onclick="closeModal()" class="btn-secondary">Cancel</button>
+            <button onclick="saveVehicle()" class="btn-primary">Save</button>
+        </div>
+    `);
+}
+
+window.editVehicle = async function(id) {
+    const response = await fetch(`${API_BASE_URL}/vehicles`);
+    const data = await response.json();
+    const vehicle = data.vehicles.find(v => v.vehicle_id === id);
+    
+    if (vehicle) {
+        showModal('Edit Vehicle', `
+            <div class="form-group">
+                <label>Vehicle Code</label>
+                <input type="text" id="vehicleCode" value="${vehicle.vehicle_code}">
+            </div>
+            <div class="form-group">
+                <label>Vehicle Type</label>
+                <select id="vehicleType">
+                    <option value="motorcycle" ${vehicle.vehicle_type === 'motorcycle' ? 'selected' : ''}>Motorcycle</option>
+                    <option value="van" ${vehicle.vehicle_type === 'van' ? 'selected' : ''}>Van</option>
+                    <option value="truck" ${vehicle.vehicle_type === 'truck' ? 'selected' : ''}>Truck</option>
+                    <option value="ebike" ${vehicle.vehicle_type === 'ebike' ? 'selected' : ''}>E-Bike</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Plate Number</label>
+                <input type="text" id="vehiclePlate" value="${vehicle.plate_number || ''}">
+            </div>
+            <div class="form-group">
+                <label>Capacity (kg)</label>
+                <input type="number" id="vehicleCapacityKg" value="${vehicle.capacity_kg || 0}">
+            </div>
+            <div class="form-group">
+                <label>Fuel Type</label>
+                <select id="vehicleFuelType">
+                    <option value="gasoline" ${vehicle.fuel_type === 'gasoline' ? 'selected' : ''}>Gasoline</option>
+                    <option value="diesel" ${vehicle.fuel_type === 'diesel' ? 'selected' : ''}>Diesel</option>
+                    <option value="electric" ${vehicle.fuel_type === 'electric' ? 'selected' : ''}>Electric</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Assigned Zone</label>
+                <input type="text" id="vehicleZone" value="${vehicle.assigned_zone || ''}">
+            </div>
+            <div class="form-group">
+                <label>Status</label>
+                <select id="vehicleStatus">
+                    <option value="available" ${vehicle.status === 'available' ? 'selected' : ''}>Available</option>
+                    <option value="assigned" ${vehicle.status === 'assigned' ? 'selected' : ''}>Assigned</option>
+                    <option value="maintenance" ${vehicle.status === 'maintenance' ? 'selected' : ''}>Maintenance</option>
+                    <option value="repair" ${vehicle.status === 'repair' ? 'selected' : ''}>Repair</option>
+                </select>
+            </div>
+            <div class="form-actions">
+                <button onclick="closeModal()" class="btn-secondary">Cancel</button>
+                <button onclick="updateVehicle(${vehicle.vehicle_id})" class="btn-primary">Update</button>
+            </div>
+        `);
+    }
+};
+
+window.saveVehicle = async function() {
+    const data = {
+        vehicle_code: document.getElementById('vehicleCode').value,
+        vehicle_type: document.getElementById('vehicleType').value,
+        plate_number: document.getElementById('vehiclePlate').value,
+        capacity_kg: parseInt(document.getElementById('vehicleCapacityKg').value) || 0,
+        fuel_type: document.getElementById('vehicleFuelType').value,
+        assigned_zone: document.getElementById('vehicleZone').value || null,
+        status: document.getElementById('vehicleStatus').value
+    };
+    
+    if (!data.vehicle_code || !data.vehicle_type) {
+        alert('Vehicle code and type are required');
+        return;
+    }
+    
+    try {
+        const response = await fetch(`${API_BASE_URL}/vehicles`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        const result = await response.json();
+        if (result.success) {
+            closeModal();
+            refreshVehiclesTable();
+        } else {
+            alert('Error: ' + result.error);
+        }
+    } catch (error) {
+        alert('Error saving vehicle');
+    }
+};
+
+window.updateVehicle = async function(id) {
+    const data = {
+        vehicle_code: document.getElementById('vehicleCode').value,
+        vehicle_type: document.getElementById('vehicleType').value,
+        plate_number: document.getElementById('vehiclePlate').value,
+        capacity_kg: parseInt(document.getElementById('vehicleCapacityKg').value) || 0,
+        fuel_type: document.getElementById('vehicleFuelType').value,
+        assigned_zone: document.getElementById('vehicleZone').value || null,
+        status: document.getElementById('vehicleStatus').value
+    };
+    
+    try {
+        const response = await fetch(`${API_BASE_URL}/vehicles/${id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        const result = await response.json();
+        if (result.success) {
+            closeModal();
+            refreshVehiclesTable();
+        } else {
+            alert('Error: ' + result.error);
+        }
+    } catch (error) {
+        alert('Error updating vehicle');
+    }
+};
+
+window.deleteVehicle = async function(id) {
+    if (confirm('Are you sure you want to delete this vehicle?')) {
+        try {
+            const response = await fetch(`${API_BASE_URL}/vehicles/${id}`, {
+                method: 'DELETE'
+            });
+            const result = await response.json();
+            if (result.success) {
+                refreshVehiclesTable();
+            } else {
+                alert('Error deleting vehicle');
+            }
+        } catch (error) {
+            alert('Error deleting vehicle');
+        }
+    }
+};
+
+// ============ USER MANAGEMENT PAGE ============
+async function loadUsersPage() {
+    await refreshUsersTable();
+    
+    contentArea.innerHTML = `
+        <div class="filter-bar">
+            <div class="filter-group">
+                <label>Role</label>
+                <select id="userRoleFilter">
+                    <option value="">All Roles</option>
+                    <option value="admin">Admin</option>
+                    <option value="dispatcher">Dispatcher</option>
+                    <option value="manager">Manager</option>
+                    <option value="driver">Driver</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <button id="applyUserFilter" class="btn-secondary">Apply Filter</button>
+                <button id="clearUserFilter" class="btn-secondary">Clear</button>
+            </div>
+            <div style="flex:1"></div>
+            <button id="newUserBtn" class="btn-primary">+ Add User</button>
+        </div>
+        
+        <div class="data-table">
+            <div class="table-header">
+                <h3>System Users</h3>
+            </div>
+            <div id="usersTableContainer">
+                <!-- Table loaded dynamically -->
+            </div>
+        </div>
+    `;
+    
+    document.getElementById('applyUserFilter').addEventListener('click', refreshUsersTable);
+    document.getElementById('clearUserFilter').addEventListener('click', () => {
+        document.getElementById('userRoleFilter').value = '';
+        refreshUsersTable();
+    });
+    document.getElementById('newUserBtn').addEventListener('click', showNewUserModal);
+}
+
+async function refreshUsersTable() {
+    const role = document.getElementById('userRoleFilter')?.value || '';
+    
+    let url = `${API_BASE_URL}/users`;
+    if (role) url += `?role=${role}`;
+    
+    try {
+        const response = await fetch(url);
+        const data = await response.json();
+        
+        const container = document.getElementById('usersTableContainer');
+        if (!container) return;
+        
+        container.innerHTML = `
+            <table>
+                <thead>
+                    <tr>
+                        <th>Username</th>
+                        <th>Full Name</th>
+                        <th>Email</th>
+                        <th>Role</th>
+                        <th>Zone Access</th>
+                        <th>Status</th>
+                        <th>Last Login</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${(data.users || []).map(user => `
+                        <tr>
+                            <td><strong>${user.username}</>
+                            <td><strong>${user.username}</strong></td>
+                            <td>${user.full_name || '-'}</td>
+                            <td>${user.email}</td>
+                            <td><span class="status-badge" style="background:#667eea20; color:#667eea">${user.role}</span></td>
+                            <td>${user.zone_access || '-'}</td>
+                            <td>${user.is_active ? '<span class="status-badge status-available">Active</span>' : '<span class="status-badge status-repair">Inactive</span>'}</td>
+                            <td>${user.last_login ? new Date(user.last_login).toLocaleString() : '-'}</td>
+                            <td>
+                                <button class="btn-secondary btn-sm" onclick="editUser(${user.user_id})">Edit</button>
+                                <button class="btn-danger btn-sm" onclick="deleteUser(${user.user_id})">Delete</button>
+                            </td>
+                        </tr>
+                    `).join('')}
+                    ${(data.users || []).length === 0 ? '<tr><td colspan="8">No users found</td>' : ''}
+                </tbody>
+            </table>
+        `;
+    } catch (error) {
+        console.error('Error loading users:', error);
+    }
+}
+
+function showNewUserModal() {
+    showModal('Add New User', `
+        <div class="form-group">
+            <label>Username *</label>
+            <input type="text" id="userUsername" placeholder="e.g., johndoe">
+        </div>
+        <div class="form-group">
+            <label>Password *</label>
+            <input type="password" id="userPassword" placeholder="••••••••">
+        </div>
+        <div class="form-group">
+            <label>Full Name</label>
+            <input type="text" id="userFullName" placeholder="John Doe">
+        </div>
+        <div class="form-group">
+            <label>Email *</label>
+            <input type="email" id="userEmail" placeholder="john@example.com">
+        </div>
+        <div class="form-group">
+            <label>Role</label>
+            <select id="userRole">
+                <option value="dispatcher">Dispatcher</option>
+                <option value="admin">Admin</option>
+                <option value="manager">Manager</option>
+                <option value="driver">Driver</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Zone Access (comma-separated)</label>
+            <input type="text" id="userZoneAccess" placeholder="ZONE_A,ZONE_B">
+        </div>
+        <div class="form-group">
+            <label>Status</label>
+            <select id="userStatus">
+                <option value="1">Active</option>
+                <option value="0">Inactive</option>
+            </select>
+        </div>
+        <div class="form-actions">
+            <button onclick="closeModal()" class="btn-secondary">Cancel</button>
+            <button onclick="saveUser()" class="btn-primary">Save</button>
+        </div>
+    `);
+}
+
+window.editUser = async function(id) {
+    const response = await fetch(`${API_BASE_URL}/users`);
+    const data = await response.json();
+    const user = data.users.find(u => u.user_id === id);
+    
+    if (user) {
+        showModal('Edit User', `
+            <div class="form-group">
+                <label>Username</label>
+                <input type="text" id="userUsername" value="${user.username}" readonly style="background:#f0f2f5">
+            </div>
+            <div class="form-group">
+                <label>New Password (leave blank to keep current)</label>
+                <input type="password" id="userPassword" placeholder="••••••••">
+            </div>
+            <div class="form-group">
+                <label>Full Name</label>
+                <input type="text" id="userFullName" value="${user.full_name || ''}">
+            </div>
+            <div class="form-group">
+                <label>Email</label>
+                <input type="email" id="userEmail" value="${user.email}">
+            </div>
+            <div class="form-group">
+                <label>Role</label>
+                <select id="userRole">
+                    <option value="dispatcher" ${user.role === 'dispatcher' ? 'selected' : ''}>Dispatcher</option>
+                    <option value="admin" ${user.role === 'admin' ? 'selected' : ''}>Admin</option>
+                    <option value="manager" ${user.role === 'manager' ? 'selected' : ''}>Manager</option>
+                    <option value="driver" ${user.role === 'driver' ? 'selected' : ''}>Driver</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Zone Access (comma-separated)</label>
+                <input type="text" id="userZoneAccess" value="${user.zone_access || ''}">
+            </div>
+            <div class="form-group">
+                <label>Status</label>
+                <select id="userStatus">
+                    <option value="1" ${user.is_active ? 'selected' : ''}>Active</option>
+                    <option value="0" ${!user.is_active ? 'selected' : ''}>Inactive</option>
+                </select>
+            </div>
+            <div class="form-actions">
+                <button onclick="closeModal()" class="btn-secondary">Cancel</button>
+                <button onclick="updateUser(${user.user_id})" class="btn-primary">Update</button>
+            </div>
+        `);
+    }
+};
+
+window.saveUser = async function() {
+    const password = document.getElementById('userPassword').value;
+    if (!password) {
+        alert('Password is required');
+        return;
+    }
+    
+    const data = {
+        username: document.getElementById('userUsername').value,
+        password: password,
+        full_name: document.getElementById('userFullName').value,
+        email: document.getElementById('userEmail').value,
+        role: document.getElementById('userRole').value,
+        zone_access: document.getElementById('userZoneAccess').value,
+        is_active: parseInt(document.getElementById('userStatus').value)
+    };
+    
+    if (!data.username || !data.email) {
+        alert('Username and email are required');
+        return;
+    }
+    
+    try {
+        const response = await fetch(`${API_BASE_URL}/users`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        const result = await response.json();
+        if (result.success) {
+            closeModal();
+            refreshUsersTable();
+        } else {
+            alert('Error: ' + result.error);
+        }
+    } catch (error) {
+        alert('Error saving user');
+    }
+};
+
+window.updateUser = async function(id) {
+    const data = {
+        full_name: document.getElementById('userFullName').value,
+        email: document.getElementById('userEmail').value,
+        role: document.getElementById('userRole').value,
+        zone_access: document.getElementById('userZoneAccess').value,
+        is_active: parseInt(document.getElementById('userStatus').value)
+    };
+    
+    const password = document.getElementById('userPassword').value;
+    if (password) {
+        data.password = password;
+    }
+    
+    try {
+        const response = await fetch(`${API_BASE_URL}/users/${id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        const result = await response.json();
+        if (result.success) {
+            closeModal();
+            refreshUsersTable();
+        } else {
+            alert('Error: ' + result.error);
+        }
+    } catch (error) {
+        alert('Error updating user');
+    }
+};
+
+window.deleteUser = async function(id) {
+    if (confirm('Are you sure you want to delete this user?')) {
+        try {
+            const response = await fetch(`${API_BASE_URL}/users/${id}`, {
+                method: 'DELETE'
+            });
+            const result = await response.json();
+            if (result.success) {
+                refreshUsersTable();
+            } else {
+                alert('Error deleting user');
+            }
+        } catch (error) {
+            alert('Error deleting user');
+        }
+    }
+};
+
+// ============ MODAL FUNCTIONS ============
+function showModal(title, bodyHtml) {
+    const modal = document.getElementById('modal');
+    const modalTitle = document.getElementById('modalTitle');
+    const modalBody = document.getElementById('modalBody');
+    
+    modalTitle.innerText = title;
+    modalBody.innerHTML = bodyHtml;
+    modal.style.display = 'flex';
+}
+
+window.closeModal = function() {
+    const modal = document.getElementById('modal');
+    modal.style.display = 'none';
+};
+
+// Close modal when clicking outside
+document.addEventListener('click', (e) => {
+    const modal = document.getElementById('modal');
+    if (e.target === modal) {
+        closeModal();
+    }
 });
 
-dateTimeSelect.addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') makePrediction();
-});
+// ============ LOADING FUNCTIONS ============
+function showLoading() {
+    let overlay = document.getElementById('loadingOverlay');
+    if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'loadingOverlay';
+        overlay.className = 'loading-overlay';
+        overlay.innerHTML = `
+            <div class="loading-spinner"></div>
+            <p>Loading...</p>
+        `;
+        document.body.appendChild(overlay);
+    }
+    overlay.style.display = 'flex';
+}
+
+function hideLoading() {
+    const overlay = document.getElementById('loadingOverlay');
+    if (overlay) {
+        overlay.style.display = 'none';
+    }
+}
+
+// ============ ADDITIONAL HELPER FUNCTIONS ============
+window.refreshCurrentPage = function() {
+    loadPage(currentPage);
+};
+
+// Global refresh functions for buttons
+window.refreshDispatchTable = refreshDispatchTable;
+window.refreshVehiclesTable = refreshVehiclesTable;
+window.refreshUsersTable = refreshUsersTable;

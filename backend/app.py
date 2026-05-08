@@ -1,212 +1,714 @@
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
+import os
+import joblib
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
-import sys
-import os
-
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-from models.train_model import DemandForecaster
-from database.queries import DatabaseQueries
-from utils.feature_engineer import prepare_features
-from utils.recommendations import generate_actionable_message, get_demand_label, get_vehicle_recommendation
+from datetime import datetime
+import mysql.connector
+from mysql.connector import Error
+import bcrypt
 
 app = Flask(__name__)
 CORS(app)
 
-# Get the path to the frontend folder
-frontend_folder = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'frontend')
-
+# ============ SERVE FRONTEND FILES ============
 @app.route('/')
-def serve_frontend():
-    """Serve the main dashboard HTML file"""
+def serve_index():
+    return send_from_directory('../frontend', 'index.html')
+
+@app.route('/<path:path>')
+def serve_frontend(path):
     try:
-        return send_from_directory(frontend_folder, 'index.html')
-    except Exception as e:
-        return f"Error loading frontend: {e}", 500
+        return send_from_directory('../frontend', path)
+    except:
+        # If file doesn't exist, return index.html (for SPA routing)
+        return send_from_directory('../frontend', 'index.html')
 
-@app.route('/style.css')
-def serve_css():
-    """Serve the CSS file"""
-    return send_from_directory(frontend_folder, 'style.css')
+# ============ DATABASE CONNECTION ============
+def get_db_connection():
+    return mysql.connector.connect(
+        host='localhost',
+        user='root',
+        password='root',
+        database='omniroute_dm'
+    )
 
-@app.route('/script.js')
-def serve_js():
-    """Serve the JavaScript file"""
-    return send_from_directory(frontend_folder, 'script.js')
-
-# Initialize forecaster and load models
-forecaster = DemandForecaster()
-
+# ============ LOAD MODELS ============
 try:
-    forecaster.load_models()
+    reg_model = joblib.load('backend/models/regression_model.pkl')
+    cls_model = joblib.load('backend/models/classification_model.pkl')
+    scaler = joblib.load('backend/models/scaler.pkl')
+    with open('backend/models/feature_columns.txt', 'r') as f:
+        feature_columns = f.read().strip().split(',')
     models_loaded = True
-    print("✅ Models loaded successfully!")
-except:
+    print("✅ Models loaded successfully")
+except Exception as e:
+    print(f"⚠️ Models not loaded: {e}")
     models_loaded = False
-    print("❌ Models not found. Please run train_model.py first.")
+    feature_columns = []
 
+# ============ HEALTH CHECK ============
 @app.route('/api/health', methods=['GET'])
-def health_check():
-    return jsonify({
-        'status': 'healthy',
-        'models_loaded': models_loaded,
-        'timestamp': datetime.now().isoformat()
-    })
+def health():
+    return jsonify({'status': 'ok', 'models_loaded': models_loaded})
 
-@app.route('/api/zones', methods=['GET'])
-def get_zones():
-    """Get all available zones"""
-    zones = ['ZONE_A', 'ZONE_B', 'ZONE_C', 'ZONE_D', 'ZONE_E']
-    return jsonify({'zones': zones})
-
-@app.route('/api/zone_config', methods=['GET'])
-def get_zone_config():
-    """Get configuration for a specific zone"""
-    zone_id = request.args.get('zone_id')
-    
-    config = DatabaseQueries.get_zone_config(zone_id)
-    
-    if config:
-        return jsonify(config)
-    else:
-        return jsonify({'error': 'Zone not found'}), 404
-
+# ============ PREDICTION API ============
 @app.route('/api/predict', methods=['POST'])
 def predict():
-    """Make prediction for a specific zone and time"""
-    
     if not models_loaded:
-        return jsonify({'error': 'Models not loaded. Please train models first.'}), 500
+        return jsonify({'success': False, 'error': 'Models not loaded'})
     
     data = request.json
     zone_id = data.get('zone_id')
-    prediction_datetime_str = data.get('datetime')
+    datetime_str = data.get('datetime')
     
-    if not zone_id or not prediction_datetime_str:
-        return jsonify({'error': 'Missing zone_id or datetime'}), 400
+    # Get zone config
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM zones WHERE zone_id = %s", (zone_id,))
+    zone_config = cursor.fetchone()
+    cursor.close()
+    conn.close()
     
-    try:
-        prediction_datetime = datetime.strptime(prediction_datetime_str, '%Y-%m-%d %H:%M:%S')
-    except:
-        try:
-            prediction_datetime = datetime.strptime(prediction_datetime_str, '%Y-%m-%d %H')
-        except:
-            return jsonify({'error': 'Invalid datetime format. Use YYYY-MM-DD HH:MM:SS'}), 400
-    
-    # Get historical data for feature engineering
-    start_date = prediction_datetime - timedelta(days=30)
-    end_date = prediction_datetime
-    
-    historical_data = DatabaseQueries.get_delivery_data(
-        zone_id=zone_id,
-        start_date=start_date,
-        end_date=end_date
-    )
-    
-    if len(historical_data) < 24:
-        return jsonify({
-            'error': 'Insufficient historical data for this zone',
-            'message': f'Only {len(historical_data)} records found. Need at least 24 hours of data.'
-        }), 400
-    
-    # Prepare features for prediction
-    df = pd.DataFrame(historical_data)
-    
-    # Create a row for prediction time
-    prediction_row = pd.DataFrame([{
-        'delivery_timestamp': prediction_datetime,
-        'delivery_count': 0
-    }])
-    
-    # Combine historical and prediction row
-    combined_df = pd.concat([df, prediction_row], ignore_index=True)
-    
-    # Engineer features
-    combined_df, feature_columns = prepare_features(combined_df)
-    
-    # Get features for prediction row
-    X_pred = combined_df[feature_columns].iloc[-1:].fillna(0)
-    
-    # Scale features
-    X_pred_scaled = forecaster.scaler.transform(X_pred)
-    
-    # Make predictions
-    predicted_count = forecaster.regression_model.predict(X_pred_scaled)[0]
-    predicted_class = forecaster.classification_model.predict(X_pred_scaled)[0]
-    
-    # Ensure non-negative
-    predicted_count = max(0, predicted_count)
-    
-    # Get zone configuration
-    zone_config = DatabaseQueries.get_zone_config(zone_id)
     if not zone_config:
-        zone_config = {
-            'zone_id': zone_id,
-            'base_vehicles': 3,
-            'threshold_normal': 15,
-            'threshold_high': 25
-        }
+        return jsonify({'success': False, 'error': 'Zone not found'})
     
-    # Generate recommendation
-    action = generate_actionable_message(
-        zone_id, predicted_count, prediction_datetime, zone_config
-    )
+    # Prepare features
+    pred_datetime = datetime.strptime(datetime_str, '%Y-%m-%d %H:%M:%S')
     
-    # Save prediction to log
-    DatabaseQueries.save_prediction(
-        zone_id, prediction_datetime, predicted_count, 
-        action['demand_level'], action['recommendation']
-    )
+    # Get recent data for lags
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("""
+        SELECT delivery_count, delivery_timestamp 
+        FROM delivery_records 
+        WHERE zone_id = %s AND delivery_timestamp < %s 
+        ORDER BY delivery_timestamp DESC LIMIT 25
+    """, (zone_id, datetime_str))
+    recent = cursor.fetchall()
+    cursor.close()
+    conn.close()
     
-    # Confidence interval
-    confidence_interval = [max(0, predicted_count - 5), predicted_count + 5]
+    # Build feature vector
+    features = {}
+    
+    # Time features
+    features['hour'] = pred_datetime.hour
+    features['hour_sin'] = np.sin(2 * np.pi * pred_datetime.hour / 24)
+    features['hour_cos'] = np.cos(2 * np.pi * pred_datetime.hour / 24)
+    features['day_of_week'] = pred_datetime.weekday()
+    features['dow_sin'] = np.sin(2 * np.pi * pred_datetime.weekday() / 7)
+    features['dow_cos'] = np.cos(2 * np.pi * pred_datetime.weekday() / 7)
+    features['month'] = pred_datetime.month
+    features['is_weekend'] = 1 if pred_datetime.weekday() >= 5 else 0
+    features['is_morning_rush'] = 1 if 7 <= pred_datetime.hour <= 9 else 0
+    features['is_evening_rush'] = 1 if 17 <= pred_datetime.hour <= 19 else 0
+    features['is_lunch_hour'] = 1 if 12 <= pred_datetime.hour <= 13 else 0
+    
+    # Lag features
+    recent_counts = [r['delivery_count'] for r in recent]
+    for lag in [1, 2, 3, 6, 12, 24]:
+        if len(recent_counts) >= lag:
+            features[f'lag_{lag}h'] = recent_counts[lag-1]
+        else:
+            features[f'lag_{lag}h'] = 0
+    
+    # Rolling features
+    for window in [3, 6, 12, 24]:
+        if len(recent_counts) >= window:
+            window_data = recent_counts[:window]
+            features[f'rolling_mean_{window}h'] = np.mean(window_data)
+            features[f'rolling_std_{window}h'] = np.std(window_data)
+        else:
+            features[f'rolling_mean_{window}h'] = 0
+            features[f'rolling_std_{window}h'] = 0
+    
+    # Create feature array
+    X = np.array([[features.get(col, 0) for col in feature_columns]])
+    X_scaled = scaler.transform(X)
+    
+    # Predict
+    pred_count = reg_model.predict(X_scaled)[0]
+    pred_count = max(0, int(round(pred_count)))
+    
+    # Demand level
+    if pred_count <= zone_config['threshold_normal']:
+        demand_level = "Normal Demand"
+    elif pred_count <= zone_config['threshold_high']:
+        demand_level = "High Demand"
+    else:
+        demand_level = "Peak Risk"
+    
+    # Vehicle recommendation
+    base = zone_config['base_vehicles']
+    if pred_count <= 10:
+        motorcycles = base
+        vans = 0
+        trucks = 0
+        recommendation = f"Normal operations: {motorcycles} motorcycles"
+    elif pred_count <= 20:
+        motorcycles = base
+        vans = 1
+        trucks = 0
+        recommendation = f"Increase capacity: {motorcycles} motorcycles + {vans} van"
+    elif pred_count <= 35:
+        motorcycles = base
+        vans = 2
+        trucks = 0
+        recommendation = f"High demand period: {motorcycles} motorcycles + {vans} vans"
+    else:
+        motorcycles = base
+        vans = 3
+        trucks = 1
+        recommendation = f"PEAK ALERT: {motorcycles} motorcycles + {vans} vans + {trucks} truck"
+    
+    # Save prediction
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO predictions_log (zone_id, predicted_hour, predicted_count, demand_level, recommendation)
+        VALUES (%s, %s, %s, %s, %s)
+    """, (zone_id, datetime_str, pred_count, demand_level, recommendation))
+    conn.commit()
+    cursor.close()
+    conn.close()
     
     return jsonify({
         'success': True,
         'prediction': {
             'zone_id': zone_id,
-            'datetime': action['predicted_hour'],
-            'predicted_deliveries': action['predicted_count'],
-            'demand_level': action['demand_level'],
-            'confidence_interval': confidence_interval,
-            'recommendation': action['recommendation'],
-            'vehicle_breakdown': action['vehicle_breakdown'],
-            'full_message': action['message']
+            'datetime': datetime_str,
+            'predicted_deliveries': pred_count,
+            'demand_level': demand_level,
+            'recommendation': recommendation,
+            'vehicle_breakdown': {
+                'motorcycles': motorcycles,
+                'vans': vans,
+                'trucks': trucks
+            },
+            'confidence_interval': [max(0, pred_count - 5), pred_count + 5],
+            'full_message': f"Zone: {zone_id}\nTime: {datetime_str}\nPredicted: {pred_count} deliveries\nDemand: {demand_level}\nRecommendation: {recommendation}"
         }
     })
 
+# ============ VEHICLE MANAGEMENT API ============
+@app.route('/api/vehicles', methods=['GET'])
+def get_vehicles():
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
+    zone_id = request.args.get('zone_id')
+    status = request.args.get('status')
+    
+    query = "SELECT * FROM vehicles WHERE 1=1"
+    params = []
+    
+    if zone_id:
+        query += " AND assigned_zone = %s"
+        params.append(zone_id)
+    if status:
+        query += " AND status = %s"
+        params.append(status)
+    
+    query += " ORDER BY vehicle_id"
+    cursor.execute(query, params)
+    vehicles = cursor.fetchall()
+    
+    cursor.close()
+    conn.close()
+    
+    return jsonify({'success': True, 'vehicles': vehicles})
+
+@app.route('/api/vehicles', methods=['POST'])
+def add_vehicle():
+    data = request.json
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("""
+            INSERT INTO vehicles (vehicle_code, vehicle_type, plate_number, capacity_kg, 
+                                 capacity_cubic_m, fuel_type, status, assigned_zone)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """, (data['vehicle_code'], data['vehicle_type'], data.get('plate_number'),
+              data.get('capacity_kg', 0), data.get('capacity_cubic_m', 0),
+              data.get('fuel_type', 'gasoline'), data.get('status', 'available'),
+              data.get('assigned_zone')))
+        
+        conn.commit()
+        vehicle_id = cursor.lastrowid
+        cursor.close()
+        conn.close()
+        
+        return jsonify({'success': True, 'vehicle_id': vehicle_id})
+    except Exception as e:
+        cursor.close()
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/vehicles/<int:vehicle_id>', methods=['PUT'])
+def update_vehicle(vehicle_id):
+    data = request.json
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        updates = []
+        params = []
+        
+        for field in ['vehicle_code', 'vehicle_type', 'plate_number', 'capacity_kg', 
+                      'capacity_cubic_m', 'fuel_type', 'status', 'assigned_zone']:
+            if field in data:
+                updates.append(f"{field} = %s")
+                params.append(data[field])
+        
+        if updates:
+            params.append(vehicle_id)
+            cursor.execute(f"UPDATE vehicles SET {', '.join(updates)} WHERE vehicle_id = %s", params)
+            conn.commit()
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({'success': True})
+    except Exception as e:
+        cursor.close()
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/vehicles/<int:vehicle_id>', methods=['DELETE'])
+def delete_vehicle(vehicle_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("DELETE FROM vehicles WHERE vehicle_id = %s", (vehicle_id,))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return jsonify({'success': True})
+    except Exception as e:
+        cursor.close()
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
+# ============ USER MANAGEMENT API ============
+@app.route('/api/users', methods=['GET'])
+def get_users():
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
+    role = request.args.get('role')
+    
+    query = "SELECT user_id, username, email, full_name, role, zone_access, is_active, last_login, created_at FROM users"
+    params = []
+    
+    if role:
+        query += " WHERE role = %s"
+        params.append(role)
+    
+    query += " ORDER BY user_id"
+    cursor.execute(query, params)
+    users = cursor.fetchall()
+    
+    # Don't send password hash
+    for user in users:
+        if 'password_hash' in user:
+            user.pop('password_hash', None)
+    
+    cursor.close()
+    conn.close()
+    
+    return jsonify({'success': True, 'users': users})
+
+@app.route('/api/users', methods=['POST'])
+def add_user():
+    data = request.json
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Hash password
+    password_hash = bcrypt.hashpw(data['password'].encode('utf-8'), bcrypt.gensalt())
+    
+    try:
+        cursor.execute("""
+            INSERT INTO users (username, password_hash, email, full_name, role, zone_access, is_active)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, (data['username'], password_hash, data['email'], data.get('full_name'),
+              data.get('role', 'dispatcher'), data.get('zone_access'), data.get('is_active', 1)))
+        
+        conn.commit()
+        user_id = cursor.lastrowid
+        cursor.close()
+        conn.close()
+        
+        return jsonify({'success': True, 'user_id': user_id})
+    except Exception as e:
+        cursor.close()
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/users/<int:user_id>', methods=['PUT'])
+def update_user(user_id):
+    data = request.json
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        updates = []
+        params = []
+        
+        for field in ['email', 'full_name', 'role', 'zone_access', 'is_active']:
+            if field in data:
+                updates.append(f"{field} = %s")
+                params.append(data[field])
+        
+        if 'password' in data and data['password']:
+            password_hash = bcrypt.hashpw(data['password'].encode('utf-8'), bcrypt.gensalt())
+            updates.append("password_hash = %s")
+            params.append(password_hash)
+        
+        if updates:
+            params.append(user_id)
+            cursor.execute(f"UPDATE users SET {', '.join(updates)} WHERE user_id = %s", params)
+            conn.commit()
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({'success': True})
+    except Exception as e:
+        cursor.close()
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/users/<int:user_id>', methods=['DELETE'])
+def delete_user(user_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("DELETE FROM users WHERE user_id = %s", (user_id,))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return jsonify({'success': True})
+    except Exception as e:
+        cursor.close()
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
+# ============ DISPATCH MANAGEMENT API ============
+@app.route('/api/dispatch/assignments', methods=['GET'])
+def get_dispatch_assignments():
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
+    zone_id = request.args.get('zone_id')
+    status = request.args.get('status')
+    date = request.args.get('date')
+    
+    query = """
+        SELECT da.*, z.zone_name 
+        FROM dispatch_assignments da
+        LEFT JOIN zones z ON da.zone_id = z.zone_id
+        WHERE 1=1
+    """
+    params = []
+    
+    if zone_id:
+        query += " AND da.zone_id = %s"
+        params.append(zone_id)
+    if status:
+        query += " AND da.dispatch_status = %s"
+        params.append(status)
+    if date:
+        query += " AND DATE(da.dispatch_datetime) = %s"
+        params.append(date)
+    
+    query += " ORDER BY da.dispatch_datetime DESC"
+    
+    cursor.execute(query, params)
+    assignments = cursor.fetchall()
+    
+    cursor.close()
+    conn.close()
+    
+    return jsonify({'success': True, 'assignments': assignments})
+
+@app.route('/api/dispatch/assignments', methods=['POST'])
+def create_dispatch_assignment():
+    data = request.json
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("""
+            INSERT INTO dispatch_assignments 
+            (zone_id, dispatch_datetime, predicted_deliveries, actual_deliveries, 
+             demand_level, assigned_vehicles, assigned_drivers, dispatch_status, 
+             notes, created_by)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (data['zone_id'], data['dispatch_datetime'], data.get('predicted_deliveries'),
+              data.get('actual_deliveries'), data.get('demand_level'), 
+              data.get('assigned_vehicles'), data.get('assigned_drivers'),
+              data.get('dispatch_status', 'planned'), data.get('notes'), 
+              data.get('created_by', 1)))
+        
+        conn.commit()
+        assignment_id = cursor.lastrowid
+        cursor.close()
+        conn.close()
+        
+        return jsonify({'success': True, 'assignment_id': assignment_id})
+    except Exception as e:
+        cursor.close()
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/dispatch/assignments/<int:assignment_id>', methods=['PUT'])
+def update_dispatch_assignment(assignment_id):
+    data = request.json
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        updates = []
+        params = []
+        
+        for field in ['dispatch_datetime', 'predicted_deliveries', 'actual_deliveries', 
+                      'demand_level', 'assigned_vehicles', 'assigned_drivers', 
+                      'dispatch_status', 'notes']:
+            if field in data:
+                updates.append(f"{field} = %s")
+                params.append(data[field])
+        
+        if 'completed_at' in data and data['completed_at']:
+            updates.append("completed_at = %s")
+            params.append(data['completed_at'])
+        
+        if updates:
+            params.append(assignment_id)
+            cursor.execute(f"UPDATE dispatch_assignments SET {', '.join(updates)} WHERE assignment_id = %s", params)
+            conn.commit()
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({'success': True})
+    except Exception as e:
+        cursor.close()
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/dispatch/assignments/<int:assignment_id>', methods=['DELETE'])
+def delete_dispatch_assignment(assignment_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("DELETE FROM dispatch_assignments WHERE assignment_id = %s", (assignment_id,))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return jsonify({'success': True})
+    except Exception as e:
+        cursor.close()
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
+# ============ DRIVER ASSIGNMENT API ============
+@app.route('/api/driver/assignments', methods=['GET'])
+def get_driver_assignments():
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
+    date = request.args.get('date')
+    driver_id = request.args.get('driver_id')
+    
+    query = """
+        SELECT da.*, u.full_name as driver_name, v.vehicle_code, z.zone_name
+        FROM driver_assignments da
+        LEFT JOIN users u ON da.driver_id = u.user_id
+        LEFT JOIN vehicles v ON da.vehicle_id = v.vehicle_id
+        LEFT JOIN zones z ON da.zone_id = z.zone_id
+        WHERE 1=1
+    """
+    params = []
+    
+    if date:
+        query += " AND da.shift_date = %s"
+        params.append(date)
+    if driver_id:
+        query += " AND da.driver_id = %s"
+        params.append(driver_id)
+    
+    query += " ORDER BY da.shift_date DESC, da.shift_start"
+    
+    cursor.execute(query, params)
+    assignments = cursor.fetchall()
+    
+    cursor.close()
+    conn.close()
+    
+    return jsonify({'success': True, 'assignments': assignments})
+
+@app.route('/api/driver/assignments', methods=['POST'])
+def create_driver_assignment():
+    data = request.json
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("""
+            INSERT INTO driver_assignments 
+            (driver_id, vehicle_id, shift_date, shift_start, shift_end, zone_id, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, (data['driver_id'], data['vehicle_id'], data['shift_date'], 
+              data['shift_start'], data['shift_end'], data.get('zone_id'), 
+              data.get('status', 'scheduled')))
+        
+        conn.commit()
+        assignment_id = cursor.lastrowid
+        
+        # Update vehicle status
+        cursor.execute("UPDATE vehicles SET status = 'assigned', driver_id = %s WHERE vehicle_id = %s", 
+                      (data['driver_id'], data['vehicle_id']))
+        conn.commit()
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({'success': True, 'assignment_id': assignment_id})
+    except Exception as e:
+        cursor.close()
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
+# ============ ZONES API ============
+@app.route('/api/zones', methods=['GET'])
+def get_zones():
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM zones ORDER BY zone_id")
+    zones = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    
+    return jsonify({'success': True, 'zones': zones})
+
+# ============ DASHBOARD STATS API ============
+@app.route('/api/dashboard/stats', methods=['GET'])
+def get_dashboard_stats():
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
+    stats = {}
+    
+    # Vehicle stats
+    cursor.execute("""
+        SELECT status, COUNT(*) as count 
+        FROM vehicles 
+        GROUP BY status
+    """)
+    stats['vehicles_by_status'] = cursor.fetchall()
+    
+    cursor.execute("SELECT COUNT(*) as total FROM vehicles")
+    stats['total_vehicles'] = cursor.fetchone()['total']
+    
+    # User stats
+    cursor.execute("""
+        SELECT role, COUNT(*) as count 
+        FROM users 
+        WHERE is_active = 1 
+        GROUP BY role
+    """)
+    stats['users_by_role'] = cursor.fetchall()
+    
+    # Dispatch stats
+    cursor.execute("""
+        SELECT dispatch_status, COUNT(*) as count 
+        FROM dispatch_assignments 
+        GROUP BY dispatch_status
+    """)
+    stats['dispatch_by_status'] = cursor.fetchall()
+    
+    # Today's assignments
+    cursor.execute("""
+        SELECT COUNT(*) as count 
+        FROM dispatch_assignments 
+        WHERE DATE(dispatch_datetime) = CURDATE()
+    """)
+    stats['today_assignments'] = cursor.fetchone()['count']
+    
+    # Active driver assignments
+    cursor.execute("""
+        SELECT COUNT(*) as count 
+        FROM driver_assignments 
+        WHERE shift_date = CURDATE() AND status = 'active'
+    """)
+    stats['active_drivers_today'] = cursor.fetchone()['count']
+    
+    cursor.close()
+    conn.close()
+    
+    return jsonify({'success': True, 'stats': stats})
+
+# ============ HISTORICAL STATS API ============
 @app.route('/api/historical_stats', methods=['GET'])
-def get_historical_stats():
-    """Get historical statistics for a zone"""
+def historical_stats():
     zone_id = request.args.get('zone_id')
     days = int(request.args.get('days', 30))
     
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=days)
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
     
-    data = DatabaseQueries.get_delivery_data(
-        zone_id=zone_id,
-        start_date=start_date,
-        end_date=end_date
-    )
+    cursor.execute("""
+        SELECT 
+            COUNT(*) as total_deliveries,
+            AVG(delivery_count) as avg_hourly_deliveries,
+            MAX(delivery_count) as max_hourly,
+            AVG(daily_count) as avg_daily_deliveries
+        FROM (
+            SELECT 
+                DATE(delivery_timestamp) as date,
+                SUM(delivery_count) as daily_count,
+                delivery_count
+            FROM delivery_records
+            WHERE zone_id = %s AND delivery_timestamp >= DATE_SUB(NOW(), INTERVAL %s DAY)
+            GROUP BY date, delivery_timestamp
+        ) as daily
+    """, (zone_id, days))
     
-    if not data:
-        return jsonify({'error': 'No historical data found'}), 404
+    result = cursor.fetchone()
     
-    df = pd.DataFrame(data)
+    # Get peak hours
+    cursor.execute("""
+        SELECT HOUR(delivery_timestamp) as hour, AVG(delivery_count) as avg_count
+        FROM delivery_records
+        WHERE zone_id = %s AND delivery_timestamp >= DATE_SUB(NOW(), INTERVAL %s DAY)
+        GROUP BY HOUR(delivery_timestamp)
+        ORDER BY avg_count DESC
+        LIMIT 3
+    """, (zone_id, days))
     
-    stats = {
-        'total_deliveries': int(df['delivery_count'].sum()),
-        'avg_daily_deliveries': float(df.groupby(df['delivery_timestamp'].dt.date)['delivery_count'].sum().mean()),
-        'avg_hourly_deliveries': float(df['delivery_count'].mean()),
-        'max_hourly': int(df['delivery_count'].max()),
-        'peak_hours': df.groupby(df['delivery_timestamp'].dt.hour)['delivery_count'].mean().nlargest(3).to_dict()
-    }
+    peak_hours = {str(row['hour']): row['avg_count'] for row in cursor.fetchall()}
     
-    return jsonify(stats)
+    cursor.close()
+    conn.close()
+    
+    return jsonify({
+        'total_deliveries': result['total_deliveries'] or 0,
+        'avg_hourly_deliveries': result['avg_hourly_deliveries'] or 0,
+        'max_hourly': result['max_hourly'] or 0,
+        'avg_daily_deliveries': result['avg_daily_deliveries'] or 0,
+        'peak_hours': peak_hours
+    })
 
+# ============ RUN APP ============
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=True, port=5000)
