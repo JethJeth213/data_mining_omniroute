@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
+from database.db_config import db_config
 import os
 import joblib
 import pandas as pd
@@ -27,12 +28,8 @@ def serve_frontend(path):
 
 # ============ DATABASE CONNECTION ============
 def get_db_connection():
-    return mysql.connector.connect(
-        host='localhost',
-        user='root',
-        password='root',
-        database='omniroute_dm'
-    )
+    """Get database connection using db_config"""
+    return db_config.get_connection()
 
 # ============ LOAD MODELS ============
 try:
@@ -65,6 +62,9 @@ def predict():
     
     # Get zone config
     conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
     cursor = conn.cursor(dictionary=True)
     cursor.execute("SELECT * FROM zones WHERE zone_id = %s", (zone_id,))
     zone_config = cursor.fetchone()
@@ -79,6 +79,9 @@ def predict():
     
     # Get recent data for lags
     conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
     cursor = conn.cursor(dictionary=True)
     cursor.execute("""
         SELECT delivery_count, delivery_timestamp 
@@ -165,14 +168,15 @@ def predict():
     
     # Save prediction
     conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO predictions_log (zone_id, predicted_hour, predicted_count, demand_level, recommendation)
-        VALUES (%s, %s, %s, %s, %s)
-    """, (zone_id, datetime_str, pred_count, demand_level, recommendation))
-    conn.commit()
-    cursor.close()
-    conn.close()
+    if conn is not None:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO predictions_log (zone_id, predicted_hour, predicted_count, demand_level, recommendation)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (zone_id, datetime_str, pred_count, demand_level, recommendation))
+        conn.commit()
+        cursor.close()
+        conn.close()
     
     return jsonify({
         'success': True,
@@ -196,6 +200,9 @@ def predict():
 @app.route('/api/vehicles', methods=['GET'])
 def get_vehicles():
     conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
     cursor = conn.cursor(dictionary=True)
     
     zone_id = request.args.get('zone_id')
@@ -224,6 +231,9 @@ def get_vehicles():
 def add_vehicle():
     data = request.json
     conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
     cursor = conn.cursor()
     
     try:
@@ -251,6 +261,9 @@ def add_vehicle():
 def update_vehicle(vehicle_id):
     data = request.json
     conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
     cursor = conn.cursor()
     
     try:
@@ -280,6 +293,9 @@ def update_vehicle(vehicle_id):
 @app.route('/api/vehicles/<int:vehicle_id>', methods=['DELETE'])
 def delete_vehicle(vehicle_id):
     conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
     cursor = conn.cursor()
     
     try:
@@ -298,6 +314,9 @@ def delete_vehicle(vehicle_id):
 @app.route('/api/users', methods=['GET'])
 def get_users():
     conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
     cursor = conn.cursor(dictionary=True)
     
     role = request.args.get('role')
@@ -313,11 +332,6 @@ def get_users():
     cursor.execute(query, params)
     users = cursor.fetchall()
     
-    # Don't send password hash
-    for user in users:
-        if 'password_hash' in user:
-            user.pop('password_hash', None)
-    
     cursor.close()
     conn.close()
     
@@ -327,6 +341,9 @@ def get_users():
 def add_user():
     data = request.json
     conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
     cursor = conn.cursor()
     
     # Hash password
@@ -354,6 +371,9 @@ def add_user():
 def update_user(user_id):
     data = request.json
     conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
     cursor = conn.cursor()
     
     try:
@@ -387,6 +407,9 @@ def update_user(user_id):
 @app.route('/api/users/<int:user_id>', methods=['DELETE'])
 def delete_user(user_id):
     conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
     cursor = conn.cursor()
     
     try:
@@ -405,6 +428,9 @@ def delete_user(user_id):
 @app.route('/api/dispatch/assignments', methods=['GET'])
 def get_dispatch_assignments():
     conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
     cursor = conn.cursor(dictionary=True)
     
     zone_id = request.args.get('zone_id')
@@ -443,6 +469,9 @@ def get_dispatch_assignments():
 def create_dispatch_assignment():
     data = request.json
     conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
     cursor = conn.cursor()
     
     try:
@@ -473,6 +502,9 @@ def create_dispatch_assignment():
 def update_dispatch_assignment(assignment_id):
     data = request.json
     conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
     cursor = conn.cursor()
     
     try:
@@ -507,6 +539,9 @@ def update_dispatch_assignment(assignment_id):
 @app.route('/api/dispatch/assignments/<int:assignment_id>', methods=['DELETE'])
 def delete_dispatch_assignment(assignment_id):
     conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
     cursor = conn.cursor()
     
     try:
@@ -525,6 +560,9 @@ def delete_dispatch_assignment(assignment_id):
 @app.route('/api/driver/assignments', methods=['GET'])
 def get_driver_assignments():
     conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
     cursor = conn.cursor(dictionary=True)
     
     date = request.args.get('date')
@@ -561,6 +599,9 @@ def get_driver_assignments():
 def create_driver_assignment():
     data = request.json
     conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
     cursor = conn.cursor()
     
     try:
@@ -593,6 +634,9 @@ def create_driver_assignment():
 @app.route('/api/zones', methods=['GET'])
 def get_zones():
     conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
     cursor = conn.cursor(dictionary=True)
     cursor.execute("SELECT * FROM zones ORDER BY zone_id")
     zones = cursor.fetchall()
@@ -605,6 +649,9 @@ def get_zones():
 @app.route('/api/dashboard/stats', methods=['GET'])
 def get_dashboard_stats():
     conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
     cursor = conn.cursor(dictionary=True)
     
     stats = {}
@@ -618,7 +665,8 @@ def get_dashboard_stats():
     stats['vehicles_by_status'] = cursor.fetchall()
     
     cursor.execute("SELECT COUNT(*) as total FROM vehicles")
-    stats['total_vehicles'] = cursor.fetchone()['total']
+    result = cursor.fetchone()
+    stats['total_vehicles'] = result['total'] if result else 0
     
     # User stats
     cursor.execute("""
@@ -643,7 +691,8 @@ def get_dashboard_stats():
         FROM dispatch_assignments 
         WHERE DATE(dispatch_datetime) = CURDATE()
     """)
-    stats['today_assignments'] = cursor.fetchone()['count']
+    result = cursor.fetchone()
+    stats['today_assignments'] = result['count'] if result else 0
     
     # Active driver assignments
     cursor.execute("""
@@ -651,7 +700,8 @@ def get_dashboard_stats():
         FROM driver_assignments 
         WHERE shift_date = CURDATE() AND status = 'active'
     """)
-    stats['active_drivers_today'] = cursor.fetchone()['count']
+    result = cursor.fetchone()
+    stats['active_drivers_today'] = result['count'] if result else 0
     
     cursor.close()
     conn.close()
@@ -665,6 +715,9 @@ def historical_stats():
     days = int(request.args.get('days', 30))
     
     conn = get_db_connection()
+    if conn is None:
+        return jsonify({'error': 'Database connection failed'})
+    
     cursor = conn.cursor(dictionary=True)
     
     cursor.execute("""
@@ -709,6 +762,344 @@ def historical_stats():
         'peak_hours': peak_hours
     })
 
+# ============ ENHANCED DISPATCH MANAGEMENT API ============
+@app.route('/api/dispatch/assignments/enhanced', methods=['GET'])
+def get_dispatch_assignments_enhanced():
+    """Get dispatch assignments with search and pagination"""
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
+    cursor = conn.cursor(dictionary=True)
+    
+    # Get pagination and search parameters
+    page = int(request.args.get('page', 1))
+    per_page = int(request.args.get('per_page', 15))
+    search = request.args.get('search', '')
+    zone_id = request.args.get('zone_id', '')
+    status = request.args.get('status', '')
+    
+    offset = (page - 1) * per_page
+    
+    # Build query with search
+    query = """
+        SELECT da.*, z.zone_name, 
+               v.vehicle_code, v.vehicle_type,
+               u.full_name as driver_name
+        FROM dispatch_assignments da
+        LEFT JOIN zones z ON da.zone_id = z.zone_id
+        LEFT JOIN vehicles v ON FIND_IN_SET(v.vehicle_code, REPLACE(da.assigned_vehicles, ' MC', '')) > 0
+        LEFT JOIN users u ON da.assigned_drivers = u.user_id
+        WHERE 1=1
+    """
+    count_query = "SELECT COUNT(*) as total FROM dispatch_assignments da WHERE 1=1"
+    params = []
+    
+    if search:
+        search_term = f"%{search}%"
+        query += " AND (da.assignment_id LIKE %s OR da.zone_id LIKE %s OR da.assigned_vehicles LIKE %s)"
+        count_query += " AND (assignment_id LIKE %s OR zone_id LIKE %s OR assigned_vehicles LIKE %s)"
+        params.extend([search_term, search_term, search_term])
+    
+    if zone_id:
+        query += " AND da.zone_id = %s"
+        count_query += " AND zone_id = %s"
+        params.append(zone_id)
+    
+    if status:
+        query += " AND da.dispatch_status = %s"
+        count_query += " AND dispatch_status = %s"
+        params.append(status)
+    
+    # Get total count
+    cursor.execute(count_query, params)
+    total = cursor.fetchone()['total']
+    
+    # Get paginated results
+    query += " ORDER BY da.dispatch_datetime DESC LIMIT %s OFFSET %s"
+    params.extend([per_page, offset])
+    
+    cursor.execute(query, params)
+    assignments = cursor.fetchall()
+    
+    cursor.close()
+    conn.close()
+    
+    return jsonify({
+        'success': True, 
+        'assignments': assignments,
+        'pagination': {
+            'page': page,
+            'per_page': per_page,
+            'total': total,
+            'total_pages': (total + per_page - 1) // per_page
+        }
+    })
+
+@app.route('/api/dispatch/assignments/full', methods=['POST'])
+def create_full_dispatch():
+    """Create dispatch assignment with driver and vehicle association"""
+    data = request.json
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
+    cursor = conn.cursor()
+    
+    try:
+        # Insert dispatch assignment
+        cursor.execute("""
+            INSERT INTO dispatch_assignments 
+            (zone_id, dispatch_datetime, predicted_deliveries, actual_deliveries, 
+             demand_level, assigned_vehicles, assigned_drivers, dispatch_status, 
+             notes, created_by)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (data['zone_id'], data['dispatch_datetime'], data.get('predicted_deliveries'),
+              data.get('actual_deliveries'), data.get('demand_level'), 
+              data['assigned_vehicles'], data.get('assigned_drivers'),
+              data.get('dispatch_status', 'planned'), data.get('notes'), 
+              data.get('created_by', 1)))
+        
+        assignment_id = cursor.lastrowid
+        
+        # Update vehicle status if vehicle is assigned
+        if data.get('vehicle_id'):
+            cursor.execute("UPDATE vehicles SET status = 'assigned' WHERE vehicle_id = %s", 
+                          (data['vehicle_id'],))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return jsonify({'success': True, 'assignment_id': assignment_id})
+    except Exception as e:
+        conn.rollback()
+        cursor.close()
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
+# ============ ENHANCED VEHICLE MANAGEMENT API ============
+@app.route('/api/vehicles/enhanced', methods=['GET'])
+def get_vehicles_enhanced():
+    """Get vehicles with search and pagination"""
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
+    cursor = conn.cursor(dictionary=True)
+    
+    page = int(request.args.get('page', 1))
+    per_page = int(request.args.get('per_page', 15))
+    search = request.args.get('search', '')
+    zone_id = request.args.get('zone_id', '')
+    status = request.args.get('status', '')
+    vehicle_type = request.args.get('vehicle_type', '')
+    
+    offset = (page - 1) * per_page
+    
+    query = "SELECT * FROM vehicles WHERE 1=1"
+    count_query = "SELECT COUNT(*) as total FROM vehicles WHERE 1=1"
+    params = []
+    
+    if search:
+        search_term = f"%{search}%"
+        query += " AND (vehicle_code LIKE %s OR plate_number LIKE %s)"
+        count_query += " AND (vehicle_code LIKE %s OR plate_number LIKE %s)"
+        params.extend([search_term, search_term])
+    
+    if zone_id:
+        query += " AND assigned_zone = %s"
+        count_query += " AND assigned_zone = %s"
+        params.append(zone_id)
+    
+    if status:
+        query += " AND status = %s"
+        count_query += " AND status = %s"
+        params.append(status)
+    
+    if vehicle_type:
+        query += " AND vehicle_type = %s"
+        count_query += " AND vehicle_type = %s"
+        params.append(vehicle_type)
+    
+    cursor.execute(count_query, params)
+    total = cursor.fetchone()['total']
+    
+    query += " ORDER BY vehicle_id LIMIT %s OFFSET %s"
+    params.extend([per_page, offset])
+    
+    cursor.execute(query, params)
+    vehicles = cursor.fetchall()
+    
+    cursor.close()
+    conn.close()
+    
+    return jsonify({
+        'success': True,
+        'vehicles': vehicles,
+        'pagination': {
+            'page': page,
+            'per_page': per_page,
+            'total': total,
+            'total_pages': (total + per_page - 1) // per_page
+        }
+    })
+
+# ============ DRIVER MANAGEMENT API ============
+@app.route('/api/drivers', methods=['GET'])
+def get_drivers():
+    """Get all users with role = 'driver'"""
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
+    cursor = conn.cursor(dictionary=True)
+    
+    # Get only drivers
+    cursor.execute("""
+        SELECT user_id, username, email, full_name, role, zone_access, is_active, 
+               last_login, created_at
+        FROM users 
+        WHERE role = 'driver'
+        ORDER BY full_name
+    """)
+    drivers = cursor.fetchall()
+    
+    cursor.close()
+    conn.close()
+    
+    return jsonify({'success': True, 'drivers': drivers})
+
+@app.route('/api/drivers', methods=['POST'])
+def add_driver():
+    """Add a new driver (user with role='driver')"""
+    data = request.json
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
+    cursor = conn.cursor()
+    password_hash = bcrypt.hashpw(data['password'].encode('utf-8'), bcrypt.gensalt())
+    
+    try:
+        cursor.execute("""
+            INSERT INTO users (username, password_hash, email, full_name, role, zone_access, is_active)
+            VALUES (%s, %s, %s, %s, 'driver', %s, %s)
+        """, (data['username'], password_hash, data['email'], data.get('full_name'),
+              data.get('zone_access'), data.get('is_active', 1)))
+        
+        conn.commit()
+        driver_id = cursor.lastrowid
+        cursor.close()
+        conn.close()
+        
+        return jsonify({'success': True, 'driver_id': driver_id})
+    except Exception as e:
+        cursor.close()
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/drivers/<int:driver_id>', methods=['PUT'])
+def update_driver(driver_id):
+    """Update driver information"""
+    data = request.json
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
+    cursor = conn.cursor()
+    
+    try:
+        updates = []
+        params = []
+        
+        for field in ['email', 'full_name', 'zone_access', 'is_active']:
+            if field in data:
+                updates.append(f"{field} = %s")
+                params.append(data[field])
+        
+        if 'password' in data and data['password']:
+            password_hash = bcrypt.hashpw(data['password'].encode('utf-8'), bcrypt.gensalt())
+            updates.append("password_hash = %s")
+            params.append(password_hash)
+        
+        if updates:
+            params.append(driver_id)
+            cursor.execute(f"UPDATE users SET {', '.join(updates)} WHERE user_id = %s AND role = 'driver'", params)
+            conn.commit()
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({'success': True})
+    except Exception as e:
+        cursor.close()
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/drivers/<int:driver_id>', methods=['DELETE'])
+def delete_driver(driver_id):
+    """Delete a driver"""
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("DELETE FROM users WHERE user_id = %s AND role = 'driver'", (driver_id,))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return jsonify({'success': True})
+    except Exception as e:
+        cursor.close()
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
+# ============ VEHICLE TYPES & STATUS API ============
+@app.route('/api/vehicle-types', methods=['GET'])
+def get_vehicle_types():
+    """Get distinct vehicle types for filters"""
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
+    cursor = conn.cursor()
+    cursor.execute("SELECT DISTINCT vehicle_type FROM vehicles WHERE vehicle_type IS NOT NULL")
+    types = [row[0] for row in cursor.fetchall()]
+    
+    cursor.close()
+    conn.close()
+    
+    return jsonify({'success': True, 'vehicle_types': types})
+
+@app.route('/api/vehicle-statuses', methods=['GET'])
+def get_vehicle_statuses():
+    """Get distinct vehicle statuses for filters"""
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
+    cursor = conn.cursor()
+    cursor.execute("SELECT DISTINCT status FROM vehicles WHERE status IS NOT NULL")
+    statuses = [row[0] for row in cursor.fetchall()]
+    
+    cursor.close()
+    conn.close()
+    
+    return jsonify({'success': True, 'vehicle_statuses': statuses})
+
+# ============ DISPATCH STATUS API ============
+@app.route('/api/dispatch-statuses', methods=['GET'])
+def get_dispatch_statuses():
+    """Get distinct dispatch statuses for filters"""
+    return jsonify({
+        'success': True, 
+        'dispatch_statuses': ['planned', 'assigned', 'enroute', 'completed', 'cancelled']
+    })
+
 # ============ RUN APP ============
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    app.run(debug=True, port=5000, host='0.0.0.0')

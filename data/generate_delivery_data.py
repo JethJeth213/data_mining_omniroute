@@ -103,8 +103,9 @@ def insert_to_mysql(df):
     try:
         conn = mysql.connector.connect(
             host='localhost',
+            port=3307,
             user='root',
-            password='root',  # Your MySQL password
+            password='',  # Your MySQL password
             database='omniroute_dm'
         )
         cursor = conn.cursor()

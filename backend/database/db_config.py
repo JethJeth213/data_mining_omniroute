@@ -7,9 +7,9 @@ class DatabaseConfig:
         self.config = {
             'host': 'localhost',
             'user': 'root',  # Your MySQL username
-            'password': 'root',  # Your MySQL password
+            'password': '',  # Your MySQL password
             'database': 'omniroute_dm',
-            'port': 3306
+            'port': 3307
         }
     
     def get_connection(self):
