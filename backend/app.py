@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, session
 from flask_cors import CORS
 from database.db_config import db_config
 import os
@@ -11,21 +11,39 @@ from mysql.connector import Error
 import bcrypt
 import subprocess
 import threading
+from functools import wraps
 
 app = Flask(__name__)
-CORS(app)
+app.secret_key = 'omniroute-dm-secret-key-2024-change-this-in-production'
+CORS(app, supports_credentials=True, origins=['http://127.0.0.1:5000', 'http://localhost:5000'])
+
+# ============ AUTHENTICATION DECORATOR ============
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            return jsonify({'success': False, 'error': 'Authentication required', 'redirect': '/login'}), 401
+        return f(*args, **kwargs)
+    return decorated_function
 
 # ============ SERVE FRONTEND FILES ============
 @app.route('/')
 def serve_index():
+    if 'user_id' not in session:
+        return send_from_directory('../frontend', 'login.html')
     return send_from_directory('../frontend', 'index.html')
+
+@app.route('/login')
+def serve_login():
+    return send_from_directory('../frontend', 'login.html')
 
 @app.route('/<path:path>')
 def serve_frontend(path):
     try:
         return send_from_directory('../frontend', path)
     except:
-        # If file doesn't exist, return index.html (for SPA routing)
+        if 'user_id' not in session:
+            return send_from_directory('../frontend', 'login.html')
         return send_from_directory('../frontend', 'index.html')
 
 # ============ DATABASE CONNECTION ============
@@ -47,6 +65,87 @@ except Exception as e:
     models_loaded = False
     feature_columns = []
 
+# ============ AUTHENTICATION API ============
+@app.route('/api/login', methods=['POST'])
+def login():
+    """Authenticate user and start session"""
+    data = request.json
+    username = data.get('username')
+    password = data.get('password')
+    
+    if not username or not password:
+        return jsonify({'success': False, 'error': 'Username and password required'})
+    
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT user_id, username, email, full_name, role, zone_access, is_active, password_hash FROM users WHERE username = %s", (username,))
+    user = cursor.fetchone()
+    cursor.close()
+    
+    if not user:
+        conn.close()
+        return jsonify({'success': False, 'error': 'Invalid username or password'})
+    
+    # Check password
+    if not bcrypt.checkpw(password.encode('utf-8'), user['password_hash'].encode('utf-8')):
+        conn.close()
+        return jsonify({'success': False, 'error': 'Invalid username or password'})
+    
+    if not user['is_active']:
+        conn.close()
+        return jsonify({'success': False, 'error': 'Account is disabled'})
+    
+    # Start session
+    session['user_id'] = user['user_id']
+    session['username'] = user['username']
+    session['full_name'] = user['full_name']
+    session['role'] = user['role']
+    session['zone_access'] = user['zone_access']
+    
+    # Update last login
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET last_login = NOW() WHERE user_id = %s", (user['user_id'],))
+    conn.commit()
+    cursor.close()
+    conn.close()
+    
+    return jsonify({
+        'success': True,
+        'user': {
+            'user_id': user['user_id'],
+            'username': user['username'],
+            'full_name': user['full_name'],
+            'role': user['role'],
+            'zone_access': user['zone_access']
+        }
+    })
+
+@app.route('/api/logout', methods=['POST'])
+def logout():
+    """Logout user and clear session"""
+    session.clear()
+    return jsonify({'success': True, 'message': 'Logged out successfully'})
+
+@app.route('/api/check-auth', methods=['GET'])
+def check_auth():
+    """Check if user is logged in"""
+    if 'user_id' in session:
+        return jsonify({
+            'authenticated': True,
+            'user': {
+                'user_id': session['user_id'],
+                'username': session['username'],
+                'full_name': session.get('full_name'),
+                'role': session.get('role'),
+                'zone_access': session.get('zone_access')
+            }
+        })
+    else:
+        return jsonify({'authenticated': False})
+
 # ============ HEALTH CHECK ============
 @app.route('/api/health', methods=['GET'])
 def health():
@@ -54,6 +153,7 @@ def health():
 
 # ============ PREDICTION API ============
 @app.route('/api/predict', methods=['POST'])
+@login_required
 def predict():
     if not models_loaded:
         return jsonify({'success': False, 'error': 'Models not loaded'})
@@ -199,6 +299,7 @@ def predict():
     })
 
 @app.route('/api/retrain-model', methods=['POST'])
+@login_required
 def retrain_model():
     """Retrain the ML model with latest delivery records"""
     
@@ -237,6 +338,7 @@ def retrain_model():
     return jsonify({'success': True, 'message': 'Model retraining started in background'})
 
 @app.route('/api/delivery-records/count', methods=['GET'])
+@login_required
 def get_delivery_records_count():
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -248,6 +350,7 @@ def get_delivery_records_count():
 
 # ============ VEHICLE MANAGEMENT API ============
 @app.route('/api/vehicles', methods=['GET'])
+@login_required
 def get_vehicles():
     conn = get_db_connection()
     if conn is None:
@@ -278,6 +381,7 @@ def get_vehicles():
     return jsonify({'success': True, 'vehicles': vehicles})
 
 @app.route('/api/vehicles', methods=['POST'])
+@login_required
 def add_vehicle():
     data = request.json
     conn = get_db_connection()
@@ -308,6 +412,7 @@ def add_vehicle():
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/api/vehicles/<int:vehicle_id>', methods=['PUT'])
+@login_required
 def update_vehicle(vehicle_id):
     data = request.json
     conn = get_db_connection()
@@ -341,6 +446,7 @@ def update_vehicle(vehicle_id):
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/api/vehicles/<int:vehicle_id>', methods=['DELETE'])
+@login_required
 def delete_vehicle(vehicle_id):
     conn = get_db_connection()
     if conn is None:
@@ -362,6 +468,7 @@ def delete_vehicle(vehicle_id):
 
 # ============ USER MANAGEMENT API ============
 @app.route('/api/users', methods=['GET'])
+@login_required
 def get_users():
     conn = get_db_connection()
     if conn is None:
@@ -388,6 +495,7 @@ def get_users():
     return jsonify({'success': True, 'users': users})
 
 @app.route('/api/users', methods=['POST'])
+@login_required
 def add_user():
     data = request.json
     conn = get_db_connection()
@@ -418,6 +526,7 @@ def add_user():
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/api/users/<int:user_id>', methods=['PUT'])
+@login_required
 def update_user(user_id):
     data = request.json
     conn = get_db_connection()
@@ -455,6 +564,7 @@ def update_user(user_id):
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/api/users/<int:user_id>', methods=['DELETE'])
+@login_required
 def delete_user(user_id):
     conn = get_db_connection()
     if conn is None:
@@ -476,6 +586,7 @@ def delete_user(user_id):
 
 # ============ DISPATCH MANAGEMENT API ============
 @app.route('/api/dispatch/assignments', methods=['GET'])
+@login_required
 def get_dispatch_assignments():
     conn = get_db_connection()
     if conn is None:
@@ -484,7 +595,7 @@ def get_dispatch_assignments():
     cursor = conn.cursor(dictionary=True)
     
     zone_id = request.args.get('zone_id')
-    status = request.args.get('status')  # This can be single status or comma-separated
+    status = request.args.get('status')
     date = request.args.get('date')
     
     query = """
@@ -499,7 +610,6 @@ def get_dispatch_assignments():
         query += " AND da.zone_id = %s"
         params.append(zone_id)
     
-    # Handle multiple statuses (comma-separated)
     if status:
         if ',' in status:
             status_list = status.split(',')
@@ -525,6 +635,7 @@ def get_dispatch_assignments():
     return jsonify({'success': True, 'assignments': assignments})
 
 @app.route('/api/dispatch/assignments', methods=['POST'])
+@login_required
 def create_dispatch_assignment():
     data = request.json
     conn = get_db_connection()
@@ -544,7 +655,7 @@ def create_dispatch_assignment():
               data.get('actual_deliveries'), data.get('demand_level'), 
               data.get('assigned_vehicles'), data.get('assigned_drivers'),
               data.get('dispatch_status', 'planned'), data.get('notes'), 
-              data.get('created_by', 1)))
+              data.get('created_by', session.get('user_id', 1))))
         
         conn.commit()
         assignment_id = cursor.lastrowid
@@ -558,6 +669,7 @@ def create_dispatch_assignment():
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/api/dispatch/assignments/<int:assignment_id>', methods=['PUT'])
+@login_required
 def update_dispatch_assignment(assignment_id):
     data = request.json
     conn = get_db_connection()
@@ -641,6 +753,7 @@ def update_dispatch_assignment(assignment_id):
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/api/dispatch/assignments/<int:assignment_id>', methods=['DELETE'])
+@login_required
 def delete_dispatch_assignment(assignment_id):
     conn = get_db_connection()
     if conn is None:
@@ -662,6 +775,7 @@ def delete_dispatch_assignment(assignment_id):
 
 # ============ DRIVER ASSIGNMENT API ============
 @app.route('/api/driver/assignments', methods=['GET'])
+@login_required
 def get_driver_assignments():
     conn = get_db_connection()
     if conn is None:
@@ -700,6 +814,7 @@ def get_driver_assignments():
     return jsonify({'success': True, 'assignments': assignments})
 
 @app.route('/api/dispatch/assignments/<int:assignment_id>/complete-with-delivery', methods=['POST'])
+@login_required
 def complete_dispatch_with_delivery(assignment_id):
     """Complete a dispatch and free up vehicles/drivers"""
     data = request.json
@@ -805,6 +920,7 @@ def complete_dispatch_with_delivery(assignment_id):
         conn.close()
 
 @app.route('/api/dispatch/assignments/<int:assignment_id>/enroute', methods=['PUT'])
+@login_required
 def mark_dispatch_enroute(assignment_id):
     """Mark dispatch as enroute and assign vehicles/drivers"""
     conn = get_db_connection()
@@ -885,6 +1001,7 @@ def mark_dispatch_enroute(assignment_id):
         conn.close()
 
 @app.route('/api/driver/assignments', methods=['POST'])
+@login_required
 def create_driver_assignment():
     data = request.json
     conn = get_db_connection()
@@ -921,6 +1038,7 @@ def create_driver_assignment():
 
 # ============ ZONES API ============
 @app.route('/api/zones', methods=['GET'])
+@login_required
 def get_zones():
     conn = get_db_connection()
     if conn is None:
@@ -936,6 +1054,7 @@ def get_zones():
 
 # ============ DASHBOARD STATS API ============
 @app.route('/api/dashboard/stats', methods=['GET'])
+@login_required
 def get_dashboard_stats():
     conn = get_db_connection()
     if conn is None:
@@ -999,6 +1118,7 @@ def get_dashboard_stats():
 
 # ============ HISTORICAL STATS API ============
 @app.route('/api/historical_stats', methods=['GET'])
+@login_required
 def historical_stats():
     zone_id = request.args.get('zone_id')
     days = int(request.args.get('days', 30))
@@ -1053,6 +1173,7 @@ def historical_stats():
 
 # ============ ENHANCED DISPATCH MANAGEMENT API ============
 @app.route('/api/dispatch/assignments/enhanced', methods=['GET'])
+@login_required
 def get_dispatch_assignments_enhanced():
     """Get dispatch assignments with search and pagination"""
     conn = get_db_connection()
@@ -1126,6 +1247,7 @@ def get_dispatch_assignments_enhanced():
     })
 
 @app.route('/api/delivery-records', methods=['POST'])
+@login_required
 def add_delivery_record():
     """Manually add a delivery record (for historical data)"""
     data = request.json
@@ -1158,8 +1280,9 @@ def add_delivery_record():
         cursor.close()
         conn.close()
         return jsonify({'success': False, 'error': str(e)})
-    
+
 @app.route('/api/dispatch/assignments/full', methods=['POST'])
+@login_required
 def create_full_dispatch():
     """Create dispatch assignment with driver and vehicle association"""
     data = request.json
@@ -1181,7 +1304,7 @@ def create_full_dispatch():
               data.get('actual_deliveries'), data.get('demand_level'), 
               data['assigned_vehicles'], data.get('assigned_drivers'),
               data.get('dispatch_status', 'planned'), data.get('notes'), 
-              data.get('created_by', 1)))
+              data.get('created_by', session.get('user_id', 1))))
         
         assignment_id = cursor.lastrowid
         
@@ -1203,6 +1326,7 @@ def create_full_dispatch():
 
 # ============ ENHANCED VEHICLE MANAGEMENT API ============
 @app.route('/api/vehicles/enhanced', methods=['GET'])
+@login_required
 def get_vehicles_enhanced():
     """Get vehicles with search and pagination"""
     conn = get_db_connection()
@@ -1270,6 +1394,7 @@ def get_vehicles_enhanced():
 
 # ============ DRIVER MANAGEMENT API ============
 @app.route('/api/drivers', methods=['GET'])
+@login_required
 def get_drivers():
     """Get all users with role = 'driver'"""
     conn = get_db_connection()
@@ -1294,6 +1419,7 @@ def get_drivers():
     return jsonify({'success': True, 'drivers': drivers})
 
 @app.route('/api/drivers', methods=['POST'])
+@login_required
 def add_driver():
     """Add a new driver (user with role='driver')"""
     data = request.json
@@ -1323,6 +1449,7 @@ def add_driver():
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/api/drivers/<int:driver_id>', methods=['PUT'])
+@login_required
 def update_driver(driver_id):
     """Update driver information"""
     data = request.json
@@ -1361,6 +1488,7 @@ def update_driver(driver_id):
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/api/drivers/<int:driver_id>', methods=['DELETE'])
+@login_required
 def delete_driver(driver_id):
     """Delete a driver"""
     conn = get_db_connection()
@@ -1383,6 +1511,7 @@ def delete_driver(driver_id):
 
 # ============ VEHICLE TYPES & STATUS API ============
 @app.route('/api/vehicle-types', methods=['GET'])
+@login_required
 def get_vehicle_types():
     """Get distinct vehicle types for filters"""
     conn = get_db_connection()
@@ -1399,6 +1528,7 @@ def get_vehicle_types():
     return jsonify({'success': True, 'vehicle_types': types})
 
 @app.route('/api/vehicle-statuses', methods=['GET'])
+@login_required
 def get_vehicle_statuses():
     """Get distinct vehicle statuses for filters"""
     conn = get_db_connection()
@@ -1416,6 +1546,7 @@ def get_vehicle_statuses():
 
 # ============ DISPATCH STATUS API ============
 @app.route('/api/dispatch-statuses', methods=['GET'])
+@login_required
 def get_dispatch_statuses():
     """Get distinct dispatch statuses for filters"""
     return jsonify({

@@ -17,11 +17,70 @@ let selectedDrivers = [];
 // DOM Elements
 let contentArea;
 
-// Initialize
-document.addEventListener('DOMContentLoaded', () => {
+// ============ AUTHENTICATION ============
+async function checkAuthentication() {
+    try {
+        const response = await fetch(`${API_BASE_URL}/check-auth`, {
+            credentials: 'include'
+        });
+        const data = await response.json();
+        
+        if (!data.authenticated) {
+            window.location.href = '/login';
+            return false;
+        }
+        
+        // Update UI with user info
+        if (data.user) {
+            const userNameSpan = document.getElementById('userName');
+            const userRoleSpan = document.getElementById('userRole');
+            if (userNameSpan) userNameSpan.textContent = data.user.full_name || data.user.username;
+            if (userRoleSpan) userRoleSpan.textContent = data.user.role;
+            
+            // Role-based UI restrictions
+            if (data.user.role === 'driver') {
+                // Hide admin-only menus
+                const userManagementLink = document.querySelector('[data-page="users"]');
+                if (userManagementLink) userManagementLink.style.display = 'none';
+            }
+        }
+        
+        return true;
+    } catch (error) {
+        console.error('Auth check failed:', error);
+        window.location.href = '/login';
+        return false;
+    }
+}
+
+async function logout() {
+    try {
+        await fetch(`${API_BASE_URL}/logout`, {
+            method: 'POST',
+            credentials: 'include'
+        });
+        sessionStorage.removeItem('user');
+        window.location.href = '/login';
+    } catch (error) {
+        console.error('Logout error:', error);
+        window.location.href = '/login';
+    }
+}
+
+document.addEventListener('DOMContentLoaded', async () => {
+    // Check authentication first
+    const isAuthenticated = await checkAuthentication();
+    if (!isAuthenticated) return;
+    
     contentArea = document.getElementById('contentArea');
     setupNavigation();
     loadPage('dashboard');
+    
+    // Add logout button listener
+    const logoutBtn = document.getElementById('logoutBtn');
+    if (logoutBtn) {
+        logoutBtn.addEventListener('click', logout);
+    }
 });
 
 // Navigation setup

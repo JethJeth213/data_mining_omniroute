@@ -1,22 +1,24 @@
 import mysql.connector
 from mysql.connector import Error
-import os
 
 class DatabaseConfig:
     def __init__(self):
         self.config = {
-            'host': 'localhost',
-            'user': 'root',  # Your MySQL username
-            'password': 'root',  # Your MySQL password
-            'database': 'omniroute_dm2',
+            'host': '127.0.0.1',
+            'user': 'root',
+            'password': '',
+            'database': 'omniroute_dm',  # ← FIXED: changed from 'omniroute_db'
+            'port': 3307,
         }
     
     def get_connection(self):
         try:
+            print(f"🔌 Attempting connection to {self.config['host']}:{self.config['port']}...")
             connection = mysql.connector.connect(**self.config)
+            print("✅ Database connected!")
             return connection
-        except Error as e:
-            print(f"Error connecting to MySQL: {e}")
+        except Exception as e:
+            print(f"❌ DATABASE ERROR: {e}")
             return None
 
 db_config = DatabaseConfig()
