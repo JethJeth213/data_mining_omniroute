@@ -12,6 +12,8 @@ import bcrypt
 import subprocess
 import threading
 from functools import wraps
+from datetime import datetime, timedelta
+import time
 
 app = Flask(__name__)
 app.secret_key = 'omniroute-dm-secret-key-2024-change-this-in-production'
@@ -162,6 +164,34 @@ def predict():
     zone_id = data.get('zone_id')
     datetime_str = data.get('datetime')
     
+    if not zone_id or not datetime_str:
+        return jsonify({'success': False, 'error': 'Missing zone_id or datetime'})
+    
+    # ========== ADD BUSINESS HOURS CHECK ==========
+    pred_datetime = datetime.strptime(datetime_str, '%Y-%m-%d %H:%M:%S')
+    hour = pred_datetime.hour
+    
+    # Check if outside business hours (6 AM - 10 PM)
+    if hour < 6 or hour > 22:
+        return jsonify({
+            'success': True,
+            'prediction': {
+                'zone_id': zone_id,
+                'datetime': datetime_str,
+                'predicted_deliveries': 0,
+                'demand_level': 'No Operations',
+                'recommendation': 'No deliveries scheduled during this time. Please select a time between 6 AM and 10 PM.',
+                'vehicle_breakdown': {
+                    'motorcycles': 0,
+                    'vans': 0,
+                    'trucks': 0
+                },
+                'confidence_interval': [0, 0],
+                'full_message': f"Zone: {zone_id}\nTime: {datetime_str}\nNo operations at this hour. Select time between 6 AM - 10 PM."
+            }
+        })
+    # =============================================
+    
     # Get zone config
     conn = get_db_connection()
     if conn is None:
@@ -175,9 +205,6 @@ def predict():
     
     if not zone_config:
         return jsonify({'success': False, 'error': 'Zone not found'})
-    
-    # Prepare features
-    pred_datetime = datetime.strptime(datetime_str, '%Y-%m-%d %H:%M:%S')
     
     # Get recent data for lags
     conn = get_db_connection()
@@ -198,7 +225,7 @@ def predict():
     # Build feature vector
     features = {}
     
-    # Time features
+    # Time features (use pred_datetime which is already defined)
     features['hour'] = pred_datetime.hour
     features['hour_sin'] = np.sin(2 * np.pi * pred_datetime.hour / 24)
     features['hour_cos'] = np.cos(2 * np.pi * pred_datetime.hour / 24)
@@ -230,12 +257,20 @@ def predict():
             features[f'rolling_std_{window}h'] = 0
     
     # Create feature array
-    X = np.array([[features.get(col, 0) for col in feature_columns]])
-    X_scaled = scaler.transform(X)
+    try:
+        X = np.array([[features.get(col, 0) for col in feature_columns]])
+        X_scaled = scaler.transform(X)
+    except Exception as e:
+        print(f"Feature error: {e}")
+        return jsonify({'success': False, 'error': f'Feature processing error: {str(e)}'})
     
     # Predict
-    pred_count = reg_model.predict(X_scaled)[0]
-    pred_count = max(0, int(round(pred_count)))
+    try:
+        pred_count = reg_model.predict(X_scaled)[0]
+        pred_count = max(0, int(round(pred_count)))
+    except Exception as e:
+        print(f"Prediction error: {e}")
+        return jsonify({'success': False, 'error': f'Model prediction error: {str(e)}'})
     
     # Demand level
     if pred_count <= zone_config['threshold_normal']:
@@ -268,18 +303,23 @@ def predict():
         trucks = 1
         recommendation = f"PEAK ALERT: {motorcycles} motorcycles + {vans} vans + {trucks} truck"
     
-    # Save prediction
-    conn = get_db_connection()
-    if conn is not None:
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO predictions_log (zone_id, predicted_hour, predicted_count, demand_level, recommendation)
-            VALUES (%s, %s, %s, %s, %s)
-        """, (zone_id, datetime_str, pred_count, demand_level, recommendation))
-        conn.commit()
-        cursor.close()
-        conn.close()
+    # Save prediction (optional - don't fail if this errors)
+    try:
+        conn = get_db_connection()
+        if conn is not None:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO predictions_log (zone_id, predicted_hour, predicted_count, demand_level, recommendation)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (zone_id, datetime_str, pred_count, demand_level, recommendation))
+            conn.commit()
+            cursor.close()
+            conn.close()
+    except Exception as e:
+        print(f"Warning: Could not save prediction to log: {e}")
+        # Continue anyway - don't fail the request
     
+    # ========== FINAL RETURN (ALWAYS HAPPENS FOR BUSINESS HOURS) ==========
     return jsonify({
         'success': True,
         'prediction': {
@@ -297,6 +337,270 @@ def predict():
             'full_message': f"Zone: {zone_id}\nTime: {datetime_str}\nPredicted: {pred_count} deliveries\nDemand: {demand_level}\nRecommendation: {recommendation}"
         }
     })
+
+_peak_cache = None
+_peak_cache_time = 0
+PEAK_CACHE_DURATION = 120  # Cache for 2 minutes
+
+# ============ NEXT PEAK PREDICTION API (7 DAYS) ============
+@app.route('/api/next-peaks', methods=['GET'])
+@login_required
+def next_peaks():
+    global _peak_cache, _peak_cache_time
+    
+    # Return cached result if still fresh
+    current_time = time.time()
+    if _peak_cache is not None and (current_time - _peak_cache_time) < PEAK_CACHE_DURATION:
+        print(f"⚡ Returning cached peaks (age: {current_time - _peak_cache_time:.1f}s)")
+        return jsonify(_peak_cache)
+    
+    print("🔍 Computing new peak detection (this may take a few seconds)...")
+    
+    if not models_loaded:
+        return jsonify({'success': False, 'error': 'Models not loaded'})
+    
+    # Get all zones in ONE query
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM zones")
+    zones = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    
+    if not zones:
+        return jsonify({'success': False, 'error': 'No zones found'})
+    
+    # Load feature columns once
+    global feature_columns
+    if feature_columns is None:
+        try:
+            with open('backend/models/feature_columns.txt', 'r') as f:
+                feature_columns = f.read().strip().split(',')
+        except:
+            feature_columns = []
+    
+    now = datetime.now()
+    next_peaks_list = []
+    
+    # For each zone, only check the next 48 hours (not 7 days) for speed
+    for zone in zones:
+        zone_id = zone['zone_id']
+        zone_name = zone['zone_name']
+        zone_peaks = []
+        
+        # Get recent records for this zone ONCE
+        conn2 = get_db_connection()
+        if conn2 is None:
+            continue
+        
+        cursor2 = conn2.cursor(dictionary=True)
+        try:
+            cursor2.execute("""
+                SELECT delivery_count, delivery_timestamp 
+                FROM delivery_records 
+                WHERE zone_id = %s 
+                ORDER BY delivery_timestamp DESC LIMIT 50
+            """, (zone_id,))
+            all_recent = cursor2.fetchall()
+        except Exception as e:
+            print(f"Error fetching records for {zone_id}: {e}")
+            all_recent = []
+        finally:
+            cursor2.close()
+            conn2.close()
+        
+        # Only check next 48 hours, and only every 3 hours (reduces work)
+        for hours_ahead in range(2, 49, 3):  # Start from 2 hours ahead, every 3 hours
+            check_time = now + timedelta(hours=hours_ahead)
+            hour = check_time.hour
+            
+            # Skip non-business hours
+            if hour < 6 or hour > 22:
+                continue
+            
+            # Get recent records BEFORE check_time
+            recent = [r for r in all_recent 
+                     if r['delivery_timestamp'] < check_time][:25]
+            
+            # Build features
+            features = {}
+            features['hour'] = check_time.hour
+            features['hour_sin'] = np.sin(2 * np.pi * check_time.hour / 24)
+            features['hour_cos'] = np.cos(2 * np.pi * check_time.hour / 24)
+            features['day_of_week'] = check_time.weekday()
+            features['dow_sin'] = np.sin(2 * np.pi * check_time.weekday() / 7)
+            features['dow_cos'] = np.cos(2 * np.pi * check_time.weekday() / 7)
+            features['month'] = check_time.month
+            features['is_weekend'] = 1 if check_time.weekday() >= 5 else 0
+            features['is_morning_rush'] = 1 if 7 <= check_time.hour <= 9 else 0
+            features['is_evening_rush'] = 1 if 17 <= check_time.hour <= 19 else 0
+            features['is_lunch_hour'] = 1 if 12 <= check_time.hour <= 13 else 0
+            
+            # Lag features
+            recent_counts = [r['delivery_count'] for r in recent]
+            for lag in [1, 2, 3, 6, 12, 24]:
+                if len(recent_counts) >= lag:
+                    features[f'lag_{lag}h'] = recent_counts[lag-1]
+                else:
+                    features[f'lag_{lag}h'] = 0
+            
+            # Rolling features
+            for window in [3, 6, 12, 24]:
+                if len(recent_counts) >= window:
+                    window_data = recent_counts[:window]
+                    features[f'rolling_mean_{window}h'] = float(np.mean(window_data))
+                    features[f'rolling_std_{window}h'] = float(np.std(window_data))
+                else:
+                    features[f'rolling_mean_{window}h'] = 0
+                    features[f'rolling_std_{window}h'] = 0
+            
+            # Predict
+            try:
+                feature_values = [features.get(col, 0) for col in feature_columns]
+                X = np.array([feature_values])
+                X_scaled = scaler.transform(X)
+                pred_count = reg_model.predict(X_scaled)[0]
+                pred_count = max(0, int(round(pred_count)))
+            except Exception as e:
+                continue
+            
+            # Check if this is a peak
+            if pred_count <= zone['threshold_normal']:
+                continue  # Skip normal demand
+            
+            if pred_count <= zone['threshold_high']:
+                demand_level = "High Demand"
+            else:
+                demand_level = "Peak Risk"
+            
+            # Calculate time description
+            hours_from_now = hours_ahead
+            if hours_from_now < 24:
+                date_desc = "Today"
+                if hours_from_now == 1:
+                    time_desc = "1 hour"
+                else:
+                    time_desc = f"{hours_from_now} hours"
+            elif hours_from_now < 48:
+                date_desc = "Tomorrow"
+                remaining = hours_from_now - 24
+                time_desc = f"{remaining} hours" if remaining != 1 else "1 hour"
+            else:
+                days = hours_from_now // 24
+                date_desc = f"In {days} days"
+                time_desc = f"{hours_from_now % 24} hours"
+            
+            # Format display time
+            hour_12 = check_time.hour if check_time.hour <= 12 else check_time.hour - 12
+            if hour_12 == 0:
+                hour_12 = 12
+            ampm = "AM" if check_time.hour < 12 else "PM"
+            weekday_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+            
+            # Vehicle recommendation
+            base = zone['base_vehicles']
+            if pred_count <= 10:
+                motorcycles, vans, trucks = base, 0, 0
+            elif pred_count <= 20:
+                motorcycles, vans, trucks = base, 1, 0
+            elif pred_count <= 35:
+                motorcycles, vans, trucks = base, 2, 0
+            else:
+                motorcycles, vans, trucks = base, 3, 1
+            
+            zone_peaks.append({
+                'datetime': check_time.strftime('%Y-%m-%d %H:%M:%S'),
+                'datetime_display': f"{weekday_names[check_time.weekday()]} at {hour_12}:00 {ampm}",
+                'date_desc': date_desc,
+                'time_desc': time_desc,
+                'hours_from_now': hours_from_now,
+                'predicted_deliveries': pred_count,
+                'demand_level': demand_level,
+                'vehicle_breakdown': {
+                    'motorcycles': motorcycles,
+                    'vans': vans,
+                    'trucks': trucks
+                },
+                'recommendation': f"{motorcycles} MC" + (f" + {vans} Vans" if vans > 0 else "") + (f" + {trucks} Truck" if trucks > 0 else "")
+            })
+        
+        if zone_peaks:
+            zone_peaks.sort(key=lambda x: x['hours_from_now'])
+            next_peaks_list.append({
+                'zone_id': zone_id,
+                'zone_name': zone_name,
+                'nearest_peak': zone_peaks[0],
+                'all_peaks_this_week': zone_peaks[:3]  # Only show top 3
+            })
+    
+    next_peaks_list.sort(key=lambda x: x['nearest_peak']['hours_from_now'])
+    
+    total_peaks = sum(1 for zone in next_peaks_list if zone['nearest_peak']['demand_level'] == 'Peak Risk')
+    total_high = sum(1 for zone in next_peaks_list if zone['nearest_peak']['demand_level'] == 'High Demand')
+    
+    result = {
+        'success': True,
+        'zones': next_peaks_list,
+        'summary': {
+            'total_zones_with_peaks': len(next_peaks_list),
+            'total_peak_risk': total_peaks,
+            'total_high_demand': total_high
+        }
+    }
+    
+    # Cache the result
+    _peak_cache = result
+    _peak_cache_time = current_time
+    
+    print(f"✅ Peak detection complete. Found {len(next_peaks_list)} zones with peaks.")
+    return jsonify(result)
+
+# ============ HELPER FUNCTION FOR PEAK DETECTION ============
+def build_prediction_features(pred_datetime, recent_records):
+    """Build feature vector for prediction at a specific datetime"""
+    
+    features = {}
+    
+    # Time features
+    features['hour'] = pred_datetime.hour
+    features['hour_sin'] = np.sin(2 * np.pi * pred_datetime.hour / 24)
+    features['hour_cos'] = np.cos(2 * np.pi * pred_datetime.hour / 24)
+    features['day_of_week'] = pred_datetime.weekday()
+    features['dow_sin'] = np.sin(2 * np.pi * pred_datetime.weekday() / 7)
+    features['dow_cos'] = np.cos(2 * np.pi * pred_datetime.weekday() / 7)
+    features['month'] = pred_datetime.month
+    features['is_weekend'] = 1 if pred_datetime.weekday() >= 5 else 0
+    features['is_morning_rush'] = 1 if 7 <= pred_datetime.hour <= 9 else 0
+    features['is_evening_rush'] = 1 if 17 <= pred_datetime.hour <= 19 else 0
+    features['is_lunch_hour'] = 1 if 12 <= pred_datetime.hour <= 13 else 0
+    
+    # Business hours features
+    features['is_business_hour'] = 1 if 6 <= pred_datetime.hour <= 22 else 0
+    features['is_overnight'] = 1 if pred_datetime.hour >= 22 or pred_datetime.hour <= 5 else 0
+    
+    # Lag features
+    recent_counts = [r['delivery_count'] for r in recent_records]
+    
+    for lag in [1, 2, 3, 6, 12, 24]:
+        if len(recent_counts) >= lag:
+            features[f'lag_{lag}h'] = recent_counts[lag-1]
+        else:
+            features[f'lag_{lag}h'] = 0
+    
+    # Rolling features
+    for window in [3, 6, 12, 24]:
+        if len(recent_counts) >= window:
+            window_data = recent_counts[:window]
+            features[f'rolling_mean_{window}h'] = float(np.mean(window_data))
+            features[f'rolling_std_{window}h'] = float(np.std(window_data))
+        else:
+            features[f'rolling_mean_{window}h'] = 0
+            features[f'rolling_std_{window}h'] = 0
+    
+    return features
 
 @app.route('/api/retrain-model', methods=['POST'])
 @login_required

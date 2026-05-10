@@ -21,7 +21,7 @@ try:
         host='localhost',
         user='root',
         password='root',
-        database='omniroute_dm'
+        database='omniroute_dm2'
     )
     
     df = pd.read_sql("SELECT zone_id, delivery_timestamp, delivery_count FROM delivery_records", conn)

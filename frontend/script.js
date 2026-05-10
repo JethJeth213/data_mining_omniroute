@@ -13,6 +13,9 @@ let availableDrivers = [];
 let selectedVehicles = []; 
 let zonesList = [];
 let selectedDrivers = []; 
+let isLoadingDashboard = false;
+let lastDashboardLoad = 0;
+const DASHBOARD_LOAD_DELAY = 10000; // 10 seconds delay between dashboard loads
 
 // DOM Elements
 let contentArea;
@@ -127,24 +130,89 @@ async function loadPage(page) {
 
 // ============ DASHBOARD ============
 async function loadDashboard() {
+    // Prevent multiple simultaneous calls
+    if (isLoadingDashboard) {
+        console.log("⚠️ Dashboard already loading, skipping...");
+        return;
+    }
+    
+    // Prevent too frequent calls
+    const now = Date.now();
+    if (now - lastDashboardLoad < DASHBOARD_LOAD_DELAY) {
+        console.log(`⏸️ Dashboard loaded ${Math.round((now - lastDashboardLoad)/1000)}s ago, skipping...`);
+        return;
+    }
+    
+    isLoadingDashboard = true;
+    lastDashboardLoad = now;
+    
     try {
-        // Set page title safely
         const pageTitle = document.getElementById('pageTitle');
         if (pageTitle) pageTitle.innerText = 'Dashboard';
         
-        // Fetch data from APIs
-        const [statsResponse, zonesResponse, enrouteResponse] = await Promise.all([
-            fetch(`${API_BASE_URL}/dashboard/stats`),
-            fetch(`${API_BASE_URL}/zones`),
-            fetch(`${API_BASE_URL}/dispatch/assignments?status=enroute`)
-        ]);
-        
-        const statsData = await statsResponse.json();
-        const zonesData = await zonesResponse.json();
-        const enrouteData = await enrouteResponse.json();
-        
-        // Make sure contentArea exists
         if (!contentArea) contentArea = document.getElementById('contentArea');
+        
+        // Show loading state
+        contentArea.innerHTML = `
+            <div class="loading-placeholder">
+                <div class="loading-spinner-small"></div>
+                <p>Loading dashboard...</p>
+            </div>
+        `;
+        
+        // Fetch all data including next peaks with individual error handling
+        let statsData = { stats: {} };
+        let zonesData = { zones: [] };
+        let enrouteData = { assignments: [] };
+        let peaksData = { success: false, zones: [], summary: {} };
+        
+        // Fetch stats
+        try {
+            const statsResponse = await fetch(`${API_BASE_URL}/dashboard/stats`);
+            if (statsResponse.ok) statsData = await statsResponse.json();
+            else console.error("Stats API failed:", statsResponse.status);
+        } catch (error) {
+            console.error("Stats fetch error:", error);
+        }
+        
+        // Fetch zones
+        try {
+            const zonesResponse = await fetch(`${API_BASE_URL}/zones`);
+            if (zonesResponse.ok) zonesData = await zonesResponse.json();
+            else console.error("Zones API failed:", zonesResponse.status);
+        } catch (error) {
+            console.error("Zones fetch error:", error);
+        }
+        
+        // Fetch enroute dispatches
+        try {
+            const enrouteResponse = await fetch(`${API_BASE_URL}/dispatch/assignments?status=enroute`);
+            if (enrouteResponse.ok) enrouteData = await enrouteResponse.json();
+            else console.error("Enroute API failed:", enrouteResponse.status);
+        } catch (error) {
+            console.error("Enroute fetch error:", error);
+        }
+        
+        // Fetch peaks (with timeout)
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
+            
+            const peaksResponse = await fetch(`${API_BASE_URL}/next-peaks`, {
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+            
+            if (peaksResponse.ok) peaksData = await peaksResponse.json();
+            else console.error("Peaks API failed:", peaksResponse.status);
+        } catch (error) {
+            if (error.name === 'AbortError') {
+                console.error("Peaks API timeout after 15 seconds");
+            } else {
+                console.error("Peaks fetch error:", error);
+            }
+            // peaksData remains default empty object
+        }
         
         // Calculate user count
         let activeUsers = 0;
@@ -152,8 +220,9 @@ async function loadDashboard() {
             activeUsers = statsData.stats.users_by_role.reduce((sum, role) => sum + role.count, 0);
         }
         
-        // Render dashboard
+        // Render dashboard with peak detection section
         contentArea.innerHTML = `
+            <!-- Stats Grid -->
             <div class="stats-grid">
                 <div class="stat-card">
                     <div class="stat-icon">🚚</div>
@@ -177,6 +246,10 @@ async function loadDashboard() {
                 </div>
             </div>
             
+            <!-- PEAK DETECTION SECTION - Next 7 Days -->
+            ${renderPeakDetectionSection(peaksData)}
+            
+            <!-- En Route Dispatches -->
             <div class="data-table">
                 <div class="table-header">
                     <h3>🚚 En Route Dispatches</h3>
@@ -187,33 +260,13 @@ async function loadDashboard() {
                 </div>
             </div>
             
+            <!-- Delivery Zones -->
             <div class="data-table" style="margin-top: 30px;">
                 <div class="table-header">
                     <h3>📍 Delivery Zones</h3>
                 </div>
                 <div style="overflow-x: auto;">
-                    <table style="width:100%; border-collapse: collapse;">
-                        <thead>
-                            <tr>
-                                <th>Zone</th>
-                                <th>Name</th>
-                                <th>Base Vehicles</th>
-                                <th>Normal Threshold</th>
-                                <th>High Threshold</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${(zonesData.zones || []).map(zone => `
-                                <tr>
-                                    <td><strong>${zone.zone_id}</strong></td>
-                                    <td>${zone.zone_name}</td>
-                                    <td>${zone.base_vehicles}</td>
-                                    <td>${zone.threshold_normal}</td>
-                                    <td>${zone.threshold_high}</td>
-                                </tr>
-                            `).join('')}
-                        </tbody>
-                    </table>
+                    ${renderZonesTable(zonesData.zones || [])}
                 </div>
             </div>
         `;
@@ -229,8 +282,153 @@ async function loadDashboard() {
                 </div>
             `;
         }
+    } finally {
+        isLoadingDashboard = false;
     }
 }
+
+function renderPeakDetectionSection(peaksData) {
+    if (!peaksData.success || !peaksData.zones || peaksData.zones.length === 0) {
+        return `
+            <div class="data-table" style="margin-bottom: 20px; background: linear-gradient(135deg, #f0fdf4, #dcfce7);">
+                <div class="table-header">
+                    <h3>🔍 Peak Detection (Next 7 Days)</h3>
+                </div>
+                <div style="padding: 30px; text-align: center;">
+                    <i class="fas fa-check-circle" style="font-size: 36px; color: #16a34a; margin-bottom: 10px; display: block;"></i>
+                    <p style="color: #166534;">No peak demand predicted in the next 7 days. Normal operations expected.</p>
+                </div>
+            </div>
+        `;
+    }
+    
+    const summary = peaksData.summary;
+    
+    return `
+        <div class="data-table" style="margin-bottom: 20px; border-left: 4px solid ${summary.total_peak_risk > 0 ? '#dc2626' : '#ea580c'};">
+            <div class="table-header">
+                <h3>⚠️ Peak Detection & Alerts (Next 7 Days)</h3>
+                <div style="display: flex; gap: 10px;">
+                    ${summary.total_peak_risk > 0 ? `<span class="badge-count" style="background: #dc2626; color: white;">${summary.total_peak_risk} Peak Risk</span>` : ''}
+                    ${summary.total_high_demand > 0 ? `<span class="badge-count" style="background: #ea580c; color: white;">${summary.total_high_demand} High Demand</span>` : ''}
+                </div>
+            </div>
+            <div style="padding: 0 20px 20px 20px;">
+                ${peaksData.zones.map(zone => {
+                    const peak = zone.nearest_peak;
+                    const isPeakRisk = peak.demand_level === 'Peak Risk';
+                    const cardColor = isPeakRisk ? '#fee2e2' : '#fff3e0';
+                    const borderColor = isPeakRisk ? '#dc2626' : '#ea580c';
+                    const icon = isPeakRisk ? '⚠️' : '📈';
+                    
+                    // Calculate urgency icon
+                    let urgencyIcon = '';
+                    if (peak.hours_from_now < 2) {
+                        urgencyIcon = '<span style="background: #dc2626; color: white; padding: 2px 8px; border-radius: 20px; font-size: 11px; margin-left: 8px;">URGENT</span>';
+                    } else if (peak.hours_from_now < 6) {
+                        urgencyIcon = '<span style="background: #f97316; color: white; padding: 2px 8px; border-radius: 20px; font-size: 11px; margin-left: 8px;">SOON</span>';
+                    }
+                    
+                    return `
+                        <div style="
+                            background: ${cardColor};
+                            border-radius: 12px;
+                            padding: 16px;
+                            margin-bottom: 12px;
+                            border-left: 4px solid ${borderColor};
+                        ">
+                            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 12px;">
+                                <div style="display: flex; align-items: center; gap: 8px;">
+                                    <span style="font-size: 24px;">${icon}</span>
+                                    <strong style="font-size: 16px;">${zone.zone_id} - ${zone.zone_name || ''}</strong>
+                                    <span class="status-badge" style="background: ${borderColor}20; color: ${borderColor}; font-weight: bold;">
+                                        ${peak.demand_level}
+                                    </span>
+                                    ${urgencyIcon}
+                                </div>
+                                <button class="btn-primary btn-sm" onclick="prepareDispatchFromPeak('${zone.zone_id}', '${peak.datetime}')">
+                                    Prepare Dispatch →
+                                </button>
+                            </div>
+                            
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; font-size: 14px;">
+                                <div>
+                                    <strong>⏰ ${peak.date_desc}</strong><br>
+                                    ${peak.datetime_display}<br>
+                                    <span style="color: #666;">(in ${peak.time_desc})</span>
+                                </div>
+                                <div>
+                                    <strong>📦 Predicted Deliveries</strong><br>
+                                    <span style="font-size: 18px; font-weight: bold;">${peak.predicted_deliveries}</span>
+                                </div>
+                                <div>
+                                    <strong>🚚 Vehicle Recommendation</strong><br>
+                                    🏍️ ${peak.vehicle_breakdown.motorcycles} MC 
+                                    ${peak.vehicle_breakdown.vans > 0 ? `| 🚐 ${peak.vehicle_breakdown.vans} Vans` : ''}
+                                    ${peak.vehicle_breakdown.trucks > 0 ? `| 🚚 ${peak.vehicle_breakdown.trucks} Truck` : ''}
+                                </div>
+                            </div>
+                            
+                            ${zone.all_peaks_this_week && zone.all_peaks_this_week.length > 1 ? `
+                            <div style="margin-top: 12px; padding-top: 10px; border-top: 1px dashed rgba(0,0,0,0.1);">
+                                <details>
+                                    <summary style="cursor: pointer; font-size: 12px; color: #666;">📋 +${zone.all_peaks_this_week.length - 1} more peak periods this week</summary>
+                                    <div style="margin-top: 8px; font-size: 12px; color: #555;">
+                                        ${zone.all_peaks_this_week.slice(1).map(p => `
+                                            <div style="padding: 5px 0;">• ${new Date(p.datetime).toLocaleString()} - ${p.predicted_deliveries} deliveries (${p.demand_level})</div>
+                                        `).join('')}
+                                    </div>
+                                </details>
+                            </div>
+                            ` : ''}
+                        </div>
+                    `;
+                }).join('')}
+            </div>
+        </div>
+    `;
+}
+
+// NEW: Function to prepare dispatch from peak alert
+window.prepareDispatchFromPeak = function(zoneId, datetime) {
+    // Store prefill values
+    sessionStorage.setItem('prefill_zone', zoneId);
+    sessionStorage.setItem('prefill_datetime', datetime);
+    
+    // Navigate to forecast page
+    const forecastLink = document.querySelector('[data-page="forecast"]');
+    if (forecastLink) {
+        forecastLink.click();
+    }
+};
+
+// Helper: Render zones table
+function renderZonesTable(zones) {
+    if (!zones || zones.length === 0) {
+        return '<div style="padding: 40px; text-align: center;">No zones configured</div>';
+    }
+    
+    return `
+        <table style="width:100%; border-collapse: collapse;">
+            <thead>
+                <tr><th>Zone</th><th>Name</th><th>Base Vehicles</th><th>Normal Threshold</th><th>High Threshold</th></tr>
+            </thead>
+            <tbody>
+                ${zones.map(zone => `
+                    <tr>
+                        <td><strong>${zone.zone_id}</strong></td>
+                        <td>${zone.zone_name}</td>
+                        <td>${zone.base_vehicles}</td>
+                        <td>${zone.threshold_normal}</td>
+                        <td>${zone.threshold_high}</td>
+                    </tr>
+                `).join('')}
+            </tbody>
+        </table>
+    `;
+}
+
+
 
 
 function renderEnrouteTable(assignments) {
@@ -397,7 +595,21 @@ async function loadForecastPage() {
     const now = new Date();
     now.setHours(now.getHours() + 1);
     now.setMinutes(0);
-    const defaultDateTime = now.toISOString().slice(0, 16);
+    let defaultDateTime = now.toISOString().slice(0, 16);
+    
+    // Check for pre-filled values from peak alert
+    const prefillZone = sessionStorage.getItem('prefill_zone');
+    const prefillDatetime = sessionStorage.getItem('prefill_datetime');
+    
+    if (prefillZone) {
+        // Use pre-filled zone
+        console.log('Pre-filling from peak alert:', prefillZone, prefillDatetime);
+    }
+    
+    if (prefillDatetime) {
+        // Convert from "2024-01-15 17:00:00" to "2024-01-15T17:00"
+        defaultDateTime = prefillDatetime.replace(' ', 'T').slice(0, 16);
+    }
     
     contentArea.innerHTML = `
         <div style="display: flex; gap: 30px; flex-wrap: wrap;">
@@ -410,7 +622,9 @@ async function loadForecastPage() {
                     <select id="zoneSelect" class="form-control">
                         <option value="">Select a zone...</option>
                         ${(zonesData.zones || []).map(zone => `
-                            <option value="${zone.zone_id}">${zone.zone_id} - ${zone.zone_name}</option>
+                            <option value="${zone.zone_id}" ${prefillZone === zone.zone_id ? 'selected' : ''}>
+                                ${zone.zone_id} - ${zone.zone_name}
+                            </option>
                         `).join('')}
                     </select>
                 </div>
@@ -420,6 +634,7 @@ async function loadForecastPage() {
                     <input type="datetime-local" id="dateTimeSelect" class="form-control" value="${defaultDateTime}">
                 </div>
                 
+                <!-- Quick Select Buttons -->
                 <div class="quick-select">
                     <label>Quick Select:</label>
                     <div class="quick-buttons">
@@ -441,6 +656,17 @@ async function loadForecastPage() {
         </div>
     `;
     
+    // Clear prefill after using
+    sessionStorage.removeItem('prefill_zone');
+    sessionStorage.removeItem('prefill_datetime');
+    
+    // ... rest of existing forecast setup (quick buttons, predict button, etc.)
+    setupForecastPage();
+}
+
+// Helper function to set up forecast page (extract existing code)
+function setupForecastPage() {
+    // Quick buttons
     document.querySelectorAll('.quick-btn').forEach(btn => {
         btn.addEventListener('click', () => {
             const hours = parseInt(btn.dataset.hours);
@@ -452,6 +678,7 @@ async function loadForecastPage() {
         });
     });
     
+    // Predict button
     document.getElementById('predictBtn').addEventListener('click', async () => {
         const zoneId = document.getElementById('zoneSelect').value;
         const datetime = document.getElementById('dateTimeSelect').value;

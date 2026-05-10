@@ -4,11 +4,11 @@ from mysql.connector import Error
 class DatabaseConfig:
     def __init__(self):
         self.config = {
-            'host': '127.0.0.1',
+            'host': 'localhost',
             'user': 'root',
-            'password': '',
-            'database': 'omniroute_dm',  # ← FIXED: changed from 'omniroute_db'
-            'port': 3307,
+            'password': 'root',
+            'database': 'omniroute_dm2',  # ← FIXED: changed from 'omniroute_db'
+            'port': 3306
         }
     
     def get_connection(self):
