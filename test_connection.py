@@ -4,9 +4,9 @@ try:
     conn = mysql.connector.connect(
         host='127.0.0.1',
         user='root',
-        password='root',  # Try empty first
-        port=3306,
-        database='omniroute_dm2'
+        password='',  # Try empty first
+        port=3307,
+        database='omniroute_dm'
     )
     print("✅ SUCCESS! Connected to database!")
     conn.close()

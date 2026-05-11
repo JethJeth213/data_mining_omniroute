@@ -33,7 +33,7 @@ let zonesList = [];
 let selectedDrivers = []; 
 let isLoadingDashboard = false;
 let lastDashboardLoad = 0;
-const DASHBOARD_LOAD_DELAY = 10000; // 10 seconds delay between dashboard loads
+const DASHBOARD_LOAD_DELAY = 10000;
 
 // DOM Elements
 let contentArea;
@@ -51,16 +51,13 @@ async function checkAuthentication() {
             return false;
         }
         
-        // Update UI with user info
         if (data.user) {
             const userNameSpan = document.getElementById('userName');
             const userRoleSpan = document.getElementById('userRole');
             if (userNameSpan) userNameSpan.textContent = data.user.full_name || data.user.username;
             if (userRoleSpan) userRoleSpan.textContent = data.user.role;
             
-            // Role-based UI restrictions
             if (data.user.role === 'driver') {
-                // Hide admin-only menus
                 const userManagementLink = document.querySelector('[data-page="users"]');
                 if (userManagementLink) userManagementLink.style.display = 'none';
             }
@@ -89,7 +86,6 @@ async function logout() {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
-    // Check authentication first
     const isAuthenticated = await checkAuthentication();
     if (!isAuthenticated) return;
     
@@ -97,14 +93,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupNavigation();
     loadPage('dashboard');
     
-    // Add logout button listener
     const logoutBtn = document.getElementById('logoutBtn');
     if (logoutBtn) {
         logoutBtn.addEventListener('click', logout);
     }
 });
 
-// Navigation setup
 function setupNavigation() {
     document.querySelectorAll('.nav-item').forEach(item => {
         item.addEventListener('click', (e) => {
@@ -120,7 +114,6 @@ function setupNavigation() {
     });
 }
 
-// Load page content
 async function loadPage(page) {
     currentPage = page;
     showLoading();
@@ -148,13 +141,11 @@ async function loadPage(page) {
 
 // ============ DASHBOARD ============
 async function loadDashboard() {
-    // Prevent multiple simultaneous calls
     if (isLoadingDashboard) {
         console.log("⚠️ Dashboard already loading, skipping...");
         return;
     }
     
-    // Prevent too frequent calls
     const now = Date.now();
     if (now - lastDashboardLoad < DASHBOARD_LOAD_DELAY) {
         console.log(`⏸️ Dashboard loaded ${Math.round((now - lastDashboardLoad)/1000)}s ago, skipping...`);
@@ -170,7 +161,6 @@ async function loadDashboard() {
         
         if (!contentArea) contentArea = document.getElementById('contentArea');
         
-        // Show loading state
         contentArea.innerHTML = `
             <div class="loading-placeholder">
                 <div class="loading-spinner-small"></div>
@@ -178,69 +168,40 @@ async function loadDashboard() {
             </div>
         `;
         
-        // Fetch all data including next peaks with individual error handling
         let statsData = { stats: {} };
         let zonesData = { zones: [] };
         let enrouteData = { assignments: [] };
         let peaksData = { success: false, zones: [], summary: {} };
         
-        // Fetch stats
         try {
             const statsResponse = await fetch(`${API_BASE_URL}/dashboard/stats`);
             if (statsResponse.ok) statsData = await statsResponse.json();
-            else console.error("Stats API failed:", statsResponse.status);
-        } catch (error) {
-            console.error("Stats fetch error:", error);
-        }
+        } catch (error) { console.error("Stats fetch error:", error); }
         
-        // Fetch zones
         try {
             const zonesResponse = await fetch(`${API_BASE_URL}/zones`);
             if (zonesResponse.ok) zonesData = await zonesResponse.json();
-            else console.error("Zones API failed:", zonesResponse.status);
-        } catch (error) {
-            console.error("Zones fetch error:", error);
-        }
+        } catch (error) { console.error("Zones fetch error:", error); }
         
-        // Fetch enroute dispatches
         try {
             const enrouteResponse = await fetch(`${API_BASE_URL}/dispatch/assignments?status=enroute`);
             if (enrouteResponse.ok) enrouteData = await enrouteResponse.json();
-            else console.error("Enroute API failed:", enrouteResponse.status);
-        } catch (error) {
-            console.error("Enroute fetch error:", error);
-        }
+        } catch (error) { console.error("Enroute fetch error:", error); }
         
-        // Fetch peaks (with timeout)
         try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
-            
-            const peaksResponse = await fetch(`${API_BASE_URL}/next-peaks`, {
-                signal: controller.signal
-            });
+            const timeoutId = setTimeout(() => controller.abort(), 15000);
+            const peaksResponse = await fetch(`${API_BASE_URL}/next-peaks`, { signal: controller.signal });
             clearTimeout(timeoutId);
-            
             if (peaksResponse.ok) peaksData = await peaksResponse.json();
-            else console.error("Peaks API failed:", peaksResponse.status);
-        } catch (error) {
-            if (error.name === 'AbortError') {
-                console.error("Peaks API timeout after 15 seconds");
-            } else {
-                console.error("Peaks fetch error:", error);
-            }
-            // peaksData remains default empty object
-        }
+        } catch (error) { console.error("Peaks fetch error:", error); }
         
-        // Calculate user count
         let activeUsers = 0;
         if (statsData.stats?.users_by_role) {
             activeUsers = statsData.stats.users_by_role.reduce((sum, role) => sum + role.count, 0);
         }
         
-        // Render dashboard with peak detection section
         contentArea.innerHTML = `
-            <!-- Stats Grid -->
             <div class="stats-grid">
                 <div class="stat-card">
                     <div class="stat-icon">🚚</div>
@@ -264,10 +225,8 @@ async function loadDashboard() {
                 </div>
             </div>
             
-            <!-- PEAK DETECTION SECTION - Next 7 Days -->
             ${renderPeakDetectionSection(peaksData)}
             
-            <!-- En Route Dispatches -->
             <div class="data-table">
                 <div class="table-header">
                     <h3>🚚 En Route Dispatches</h3>
@@ -278,7 +237,6 @@ async function loadDashboard() {
                 </div>
             </div>
             
-            <!-- Delivery Zones -->
             <div class="data-table" style="margin-top: 30px;">
                 <div class="table-header">
                     <h3>📍 Delivery Zones</h3>
@@ -288,6 +246,12 @@ async function loadDashboard() {
                 </div>
             </div>
         `;
+        
+        setTimeout(() => {
+            loadAcknowledgedRisksAndFilter();
+            setupRiskAcknowledgmentButtons();
+        }, 100);
+        
     } catch (error) {
         console.error('Dashboard error:', error);
         if (contentArea) {
@@ -331,15 +295,15 @@ function renderPeakDetectionSection(peaksData) {
                     ${summary.total_high_demand > 0 ? `<span class="badge-count" style="background: #ea580c; color: white;">${summary.total_high_demand} High Demand</span>` : ''}
                 </div>
             </div>
-            <div style="padding: 0 20px 20px 20px;">
+            <div style="padding: 0 20px 20px 20px;" id="peaksListContainer">
                 ${peaksData.zones.map(zone => {
                     const peak = zone.nearest_peak;
                     const isPeakRisk = peak.demand_level === 'Peak Risk';
                     const cardColor = isPeakRisk ? '#fee2e2' : '#fff3e0';
                     const borderColor = isPeakRisk ? '#dc2626' : '#ea580c';
                     const icon = isPeakRisk ? '⚠️' : '📈';
+                    const riskKey = `${zone.zone_id}|${peak.datetime}`;
                     
-                    // Calculate urgency icon
                     let urgencyIcon = '';
                     if (peak.hours_from_now < 2) {
                         urgencyIcon = '<span style="background: #dc2626; color: white; padding: 2px 8px; border-radius: 20px; font-size: 11px; margin-left: 8px;">URGENT</span>';
@@ -348,7 +312,7 @@ function renderPeakDetectionSection(peaksData) {
                     }
                     
                     return `
-                        <div style="
+                        <div class="peak-card" data-risk-key="${riskKey}" data-zone="${zone.zone_id}" data-datetime="${peak.datetime}" style="
                             background: ${cardColor};
                             border-radius: 12px;
                             padding: 16px;
@@ -364,9 +328,14 @@ function renderPeakDetectionSection(peaksData) {
                                     </span>
                                     ${urgencyIcon}
                                 </div>
-                                <button class="btn-primary btn-sm" onclick="prepareDispatchFromPeak('${zone.zone_id}', '${peak.datetime}')">
-                                    Prepare Dispatch →
-                                </button>
+                                <div style="display: flex; gap: 8px;">
+                                    <button class="btn-primary btn-sm" onclick="prepareDispatchFromPeak('${zone.zone_id}', '${peak.datetime}')">
+                                        Prepare Dispatch →
+                                    </button>
+                                    <button class="btn-secondary btn-sm acknowledge-risk-btn" data-zone="${zone.zone_id}" data-datetime="${peak.datetime}">
+                                        ✓ Acknowledge Risk
+                                    </button>
+                                </div>
                             </div>
                             
                             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; font-size: 14px;">
@@ -407,20 +376,75 @@ function renderPeakDetectionSection(peaksData) {
     `;
 }
 
-// NEW: Function to prepare dispatch from peak alert
-window.prepareDispatchFromPeak = function(zoneId, datetime) {
-    // Store prefill values
-    sessionStorage.setItem('prefill_zone', zoneId);
-    sessionStorage.setItem('prefill_datetime', datetime);
-    
-    // Navigate to forecast page
-    const forecastLink = document.querySelector('[data-page="forecast"]');
-    if (forecastLink) {
-        forecastLink.click();
+async function loadAcknowledgedRisksAndFilter() {
+    try {
+        const response = await fetch(`${API_BASE_URL}/get-acknowledged-risks`, {
+            credentials: 'include'
+        });
+        const data = await response.json();
+        if (data.success && data.acknowledged_risks) {
+            document.querySelectorAll('.peak-card').forEach(card => {
+                const riskKey = card.dataset.riskKey;
+                if (riskKey && data.acknowledged_risks.includes(riskKey)) {
+                    card.style.display = 'none';
+                }
+            });
+        }
+    } catch (error) {
+        console.error('Error loading acknowledged risks:', error);
+    }
+}
+
+window.acknowledgeRisk = async function(zoneId, datetime, cardElement) {
+    try {
+        const response = await fetch(`${API_BASE_URL}/acknowledge-risk`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ zone_id: zoneId, datetime: datetime })
+        });
+        
+        const data = await response.json();
+        if (data.success) {
+            if (cardElement) {
+                cardElement.style.display = 'none';
+            }
+            alert('Risk acknowledged and removed from dashboard');
+        } else {
+            alert('Error: ' + (data.error || 'Could not acknowledge risk'));
+        }
+    } catch (error) {
+        console.error('Error acknowledging risk:', error);
+        alert('Error acknowledging risk');
     }
 };
 
-// Helper: Render zones table
+function setupRiskAcknowledgmentButtons() {
+    document.querySelectorAll('.acknowledge-risk-btn').forEach(btn => {
+        btn.removeEventListener('click', handleAcknowledgeClick);
+        btn.addEventListener('click', handleAcknowledgeClick);
+    });
+}
+
+function handleAcknowledgeClick(event) {
+    event.stopPropagation();
+    const btn = event.currentTarget;
+    const zoneId = btn.dataset.zone;
+    const datetime = btn.dataset.datetime;
+    const card = btn.closest('.peak-card');
+    
+    if (confirm('Acknowledge this risk? It will be removed from your dashboard.')) {
+        window.acknowledgeRisk(zoneId, datetime, card);
+    }
+}
+
+window.prepareDispatchFromPeak = function(zoneId, datetime) {
+    sessionStorage.setItem('prefill_zone', zoneId);
+    sessionStorage.setItem('prefill_datetime', datetime);
+    const forecastLink = document.querySelector('[data-page="forecast"]');
+    if (forecastLink) forecastLink.click();
+};
+
 function renderZonesTable(zones) {
     if (!zones || zones.length === 0) {
         return '<div style="padding: 40px; text-align: center;">No zones configured</div>';
@@ -435,19 +459,16 @@ function renderZonesTable(zones) {
                 ${zones.map(zone => `
                     <tr>
                         <td><strong>${zone.zone_id}</strong></td>
-                        <td>${zone.zone_name}</td>
-                        <td>${zone.base_vehicles}</td>
-                        <td>${zone.threshold_normal}</td>
-                        <td>${zone.threshold_high}</td>
+                        <td>${zone.zone_name}</small></td>
+                        <td>${zone.base_vehicles}</small></td>
+                        <td>${zone.threshold_normal}</small></td>
+                        <td>${zone.threshold_high}</small></td>
                     </tr>
                 `).join('')}
             </tbody>
         </table>
     `;
 }
-
-
-
 
 function renderEnrouteTable(assignments) {
     if (!assignments || assignments.length === 0) {
@@ -480,131 +501,6 @@ function renderEnrouteTable(assignments) {
     `;
 }
 
-function getStatusBadge(status) {
-    const statusMap = {
-        'planned': '<span class="status-badge status-planned">📋 Planned</span>',
-        'assigned': '<span class="status-badge status-assigned">👥 Assigned</span>',
-        'enroute': '<span class="status-badge status-enroute">🚚 En Route</span>',
-        'completed': '<span class="status-badge status-completed">✅ Completed</span>',
-        'cancelled': '<span class="status-badge status-cancelled">❌ Cancelled</span>'
-    };
-    return statusMap[status] || `<span class="status-badge">${status}</span>`;
-}
-
-function renderEnrouteDispatches(assignments) {
-    console.log('Rendering enroute dispatches:', assignments); // Debug: check assignments
-    
-    if (!assignments || assignments.length === 0) {
-        return `
-            <div style="padding: 40px; text-align: center; color: #666;">
-                <i class="fas fa-truck" style="font-size: 48px; color: #FF9800; margin-bottom: 10px; display: block;"></i>
-                No en route dispatches at this time.
-                <br><small>Current enroute count: 0</small>
-            </div>
-        `;
-    }
-    
-    return `
-        <table style="width:100%; border-collapse: collapse;">
-            <thead>
-                <tr style="position: sticky; top: 0; background: #f8f9fa; z-index: 10;">
-                    <th>Zone</th>
-                    <th>Date/Time</th>
-                    <th>Deliveries</th>
-                    <th>Demand Level</th>
-                    <th>Assigned Vehicles</th>
-                    <th>Assigned Drivers</th>
-                    <th>Status</th>
-                </tr>
-            </thead>
-            <tbody>
-                ${assignments.map(ass => `
-                    <tr>
-                        <td><strong>${ass.zone_id}</strong><br><small>${ass.zone_name || ''}</small></small></td>
-                        <td><small>${new Date(ass.dispatch_datetime).toLocaleString()}</small></small></td>
-                        <td><strong>${ass.predicted_deliveries || '-'}</strong></small></td>
-                        <td>${getDemandLevelBadge(ass.demand_level)}</small></td>
-                        <td><small>${ass.assigned_vehicles || '-'}</small></small></td>
-                        <td><small>${ass.assigned_drivers || '-'}</small></small></td>
-                        <td><span class="status-badge status-enroute">🚚 En Route</span></small></td>
-                    </tr>
-                `).join('')}
-            </tbody>
-        </table>
-    `;
-}
-
-function getUserCount(usersByRole) {
-    if (!usersByRole) return 0;
-    return usersByRole.reduce((sum, role) => sum + role.count, 0);
-}
-
-function renderActiveDispatches(assignments) {
-    if (!assignments.length) {
-        return '<tr><td colspan="6">No active dispatches</td></tr>';
-    }
-    return assignments.map(ass => `
-        <tr>
-            <td>${ass.zone_id}</td>
-            <td>${new Date(ass.dispatch_datetime).toLocaleString()}</td>
-            <td><strong>${ass.predicted_deliveries || '-'}</strong></td>
-            <td><span class="status-badge status-${ass.dispatch_status}">${ass.dispatch_status}</span></td>
-            <td><small>${ass.assigned_vehicles || '-'}</small></td>
-            <td><small>${ass.assigned_drivers || '-'}</small></td>
-        </tr>
-    `).join('');
-}
-
-function getDemandLevelBadge(level) {
-    if (!level) return '-';
-    const colors = {
-        'Peak Risk': '#dc2626',
-        'High Demand': '#ea580c',
-        'Normal Demand': '#16a34a'
-    };
-    return `<span class="status-badge" style="background: ${colors[level] || '#666'}20; color: ${colors[level] || '#666'}">${level}</span>`;
-}
-
-function renderActiveDispatchesTable(assignments) {
-    if (!assignments || assignments.length === 0) {
-        return `
-            <div style="padding: 40px; text-align: center; color: #666;">
-                <i class="fas fa-check-circle" style="font-size: 48px; color: #4CAF50; margin-bottom: 10px; display: block;"></i>
-                No active dispatches at this time.
-            </div>
-        `;
-    }
-    
-    return `
-        <table style="width:100%; border-collapse: collapse;">
-            <thead>
-                <tr style="position: sticky; top: 0; background: #f8f9fa; z-index: 10;">
-                    <th>Zone</th>
-                    <th>Date/Time</th>
-                    <th>Deliveries</th>
-                    <th>Demand Level</th>
-                    <th>Assigned Vehicles</th>
-                    <th>Assigned Drivers</th>
-                    <th>Status</th>
-                </tr>
-            </thead>
-            <tbody>
-                ${assignments.map(ass => `
-                    <tr>
-                        <td><strong>${ass.zone_id}</strong><br><small>${ass.zone_name || ''}</small></td>
-                        <td><small>${new Date(ass.dispatch_datetime).toLocaleString()}</small></td>
-                        <td><strong>${ass.predicted_deliveries || '-'}</strong></td>
-                        <td>${getDemandLevelBadge(ass.demand_level)}</td>
-                        <td><small>${ass.assigned_vehicles || '-'}</small></td>
-                        <td><small>${ass.assigned_drivers || '-'}</small></td>
-                        <td>${getStatusBadge(ass.dispatch_status)}</td>
-                    </tr>
-                `).join('')}
-            </tbody>
-        </table>
-    `;
-}
-
 // ============ DEMAND FORECAST PAGE ============
 async function loadForecastPage() {
     const zonesResponse = await fetch(`${API_BASE_URL}/zones`);
@@ -615,17 +511,10 @@ async function loadForecastPage() {
     now.setMinutes(0);
     let defaultDateTime = now.toISOString().slice(0, 16);
     
-    // Check for pre-filled values from peak alert
     const prefillZone = sessionStorage.getItem('prefill_zone');
     const prefillDatetime = sessionStorage.getItem('prefill_datetime');
     
-    if (prefillZone) {
-        // Use pre-filled zone
-        console.log('Pre-filling from peak alert:', prefillZone, prefillDatetime);
-    }
-    
     if (prefillDatetime) {
-        // Convert from "2024-01-15 17:00:00" to "2024-01-15T17:00"
         defaultDateTime = prefillDatetime.replace(' ', 'T').slice(0, 16);
     }
     
@@ -652,7 +541,6 @@ async function loadForecastPage() {
                     <input type="datetime-local" id="dateTimeSelect" class="form-control" value="${defaultDateTime}">
                 </div>
                 
-                <!-- Quick Select Buttons -->
                 <div class="quick-select">
                     <label>Quick Select:</label>
                     <div class="quick-buttons">
@@ -674,17 +562,12 @@ async function loadForecastPage() {
         </div>
     `;
     
-    // Clear prefill after using
     sessionStorage.removeItem('prefill_zone');
     sessionStorage.removeItem('prefill_datetime');
-    
-    // ... rest of existing forecast setup (quick buttons, predict button, etc.)
     setupForecastPage();
 }
 
-// Helper function to set up forecast page (extract existing code)
 function setupForecastPage() {
-    // Quick buttons
     document.querySelectorAll('.quick-btn').forEach(btn => {
         btn.addEventListener('click', () => {
             const hours = parseInt(btn.dataset.hours);
@@ -696,7 +579,6 @@ function setupForecastPage() {
         });
     });
     
-    // Predict button
     document.getElementById('predictBtn').addEventListener('click', async () => {
         const zoneId = document.getElementById('zoneSelect').value;
         const datetime = document.getElementById('dateTimeSelect').value;
@@ -712,6 +594,7 @@ function setupForecastPage() {
             const response = await fetch(`${API_BASE_URL}/predict`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
                 body: JSON.stringify({
                     zone_id: zoneId,
                     datetime: datetime.replace('T', ' ') + ':00'
@@ -740,7 +623,13 @@ function displayPrediction(prediction) {
     const demandColor = prediction.demand_level === 'Peak Risk' ? '#dc2626' : 
                        prediction.demand_level === 'High Demand' ? '#ea580c' : '#16a34a';
     
+    const adjustmentNote = prediction.adjusted ? 
+        `<div style="background: #fff3e0; padding: 10px; border-radius: 8px; margin-bottom: 15px;">
+            <small>⚠️ This is an ADJUSTED forecast (+${prediction.adjustment_applied} deliveries). Original prediction was ${prediction.original_prediction} deliveries.</small>
+         </div>` : '';
+    
     resultsDiv.innerHTML = `
+        ${adjustmentNote}
         <div class="metrics-grid" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;">
             <div class="metric-card" style="padding: 20px; text-align: center; background: linear-gradient(135deg, #f5f7fa, #e9ecef); border-radius: 15px;">
                 <div class="metric-label">Forecasted Deliveries</div>
@@ -750,8 +639,8 @@ function displayPrediction(prediction) {
             <div class="metric-card" style="padding: 20px; text-align: center; background: linear-gradient(135deg, #f5f7fa, #e9ecef); border-radius: 15px;">
                 <div class="metric-label">Demand Level</div>
                 <div class="metric-value" style="font-size: 32px; font-weight: 800; color: ${demandColor}">${prediction.demand_level}</div>
-                <div class="metric-sub">${prediction.demand_level === 'Peak Risk' ? '⚠️ Prepare all resources' : 
-                                         prediction.demand_level === 'High Demand' ? '📈 Increase capacity' : '✅ Normal operations'}</div>
+                <div class="metric-sub">${prediction.demand_level.includes('Peak') ? '⚠️ Prepare all resources' : 
+                                         prediction.demand_level.includes('High') ? '📈 Increase capacity' : '✅ Normal operations'}</div>
             </div>
             <div class="metric-card" style="padding: 20px; text-align: center; background: linear-gradient(135deg, #f5f7fa, #e9ecef); border-radius: 15px;">
                 <div class="metric-label">Zone</div>
@@ -772,6 +661,9 @@ function displayPrediction(prediction) {
         
         <div class="action-buttons" style="display: flex; gap: 10px; margin-top: 20px;">
             <button onclick="createDispatchFromPrediction()" class="btn-primary">Create Dispatch Assignment</button>
+            <button onclick="getAdjustedForecast()" class="btn-warning" style="background: #ea580c; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer;">
+                +2 Risk (Adjust Forecast ↑)
+            </button>
         </div>
     `;
     
@@ -779,15 +671,71 @@ function displayPrediction(prediction) {
     window.lastPrediction = prediction;
 }
 
+window.getAdjustedForecast = async function() {
+    if (!window.lastPrediction) {
+        alert('Please make a prediction first');
+        return;
+    }
+    
+    const pred = window.lastPrediction;
+    showLoading();
+    
+    try {
+        const response = await fetch(`${API_BASE_URL}/predict-adjusted`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+                zone_id: pred.zone_id,
+                datetime: pred.datetime,
+                adjustment: 2
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            displayPrediction(data.prediction);
+            alert(`⚠️ Risk-adjusted forecast: +2 deliveries added.\nNew total: ${data.prediction.predicted_deliveries} deliveries`);
+        } else {
+            alert('Error: ' + (data.error || 'Could not get adjusted forecast'));
+        }
+    } catch (error) {
+        console.error('Error getting adjusted forecast:', error);
+        alert('Error connecting to server');
+    } finally {
+        hideLoading();
+    }
+};
+
 window.createDispatchFromPrediction = async function() {
     if (!window.lastPrediction) return;
     const pred = window.lastPrediction;
     
     showLoading();
     try {
+        const vehiclesResponse = await fetch(`${API_BASE_URL}/vehicles?status=available`);
+        const vehiclesData = await vehiclesResponse.json();
+        
+        const neededMotorcycles = pred.vehicle_breakdown.motorcycles;
+        const neededVans = pred.vehicle_breakdown.vans;
+        const neededTrucks = pred.vehicle_breakdown.trucks;
+        
+        const availableMotorcycles = (vehiclesData.vehicles || []).filter(v => v.vehicle_type === 'motorcycle' && v.status === 'available').length;
+        const availableVans = (vehiclesData.vehicles || []).filter(v => v.vehicle_type === 'van' && v.status === 'available').length;
+        const availableTrucks = (vehiclesData.vehicles || []).filter(v => v.vehicle_type === 'truck' && v.status === 'available').length;
+        
+        if (availableMotorcycles < neededMotorcycles || availableVans < neededVans || availableTrucks < neededTrucks) {
+            alert(`⚠️ Insufficient available vehicles!\nNeed: ${neededMotorcycles} MC, ${neededVans} Vans, ${neededTrucks} Trucks\nAvailable: ${availableMotorcycles} MC, ${availableVans} Vans, ${availableTrucks} Trucks\n\nPlease assign vehicles manually in Fleet Dispatch.`);
+            loadPage('dispatch');
+            hideLoading();
+            return;
+        }
+        
         const response = await fetch(`${API_BASE_URL}/dispatch/assignments`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
             body: JSON.stringify({
                 zone_id: pred.zone_id,
                 dispatch_datetime: pred.datetime,
@@ -795,33 +743,32 @@ window.createDispatchFromPrediction = async function() {
                 demand_level: pred.demand_level,
                 assigned_vehicles: `${pred.vehicle_breakdown.motorcycles} MC, ${pred.vehicle_breakdown.vans} Vans, ${pred.vehicle_breakdown.trucks} Trucks`,
                 dispatch_status: 'planned',
-                notes: 'Auto-created from demand prediction',
+                notes: `Auto-created from demand prediction${pred.adjusted ? ' (ADJUSTED +2 RISK FORECAST)' : ''}`,
                 created_by: 1
             })
         });
         
         const data = await response.json();
         if (data.success) {
-            alert('Dispatch assignment created successfully!');
+            alert(`Dispatch assignment created successfully!\nVehicles will be automatically marked as ASSIGNED when dispatch starts.\n\nNote: Go to Fleet Dispatch > Start to mark vehicles as assigned.`);
             loadPage('dispatch');
         } else {
             alert('Error: ' + data.error);
         }
     } catch (error) {
+        console.error('Error:', error);
         alert('Error creating assignment');
     } finally {
         hideLoading();
     }
 };
 
-// ============ ENHANCED FLEET DISPATCH PAGE ============
+// ============ FLEET DISPATCH PAGE ============
 async function loadDispatchPage() {
-    // Fetch zones first
     const zonesResponse = await fetch(`${API_BASE_URL}/zones`);
     const zonesData = await zonesResponse.json();
     zonesList = zonesData.zones || [];
     
-    // Load assignments
     await refreshDispatchTable();
     
     contentArea.innerHTML = `
@@ -862,14 +809,11 @@ async function loadDispatchPage() {
             <div class="table-header">
                 <h3>Dispatch Assignments</h3>
             </div>
-            <div id="dispatchTableContainer">
-                <!-- Table loaded dynamically -->
-            </div>
+            <div id="dispatchTableContainer"></div>
         </div>
         <div id="dispatchPagination" style="display: flex; justify-content: center; gap: 10px; margin-top: 20px;"></div>
     `;
     
-    // Setup event listeners
     document.getElementById('applyDispatchFilter').addEventListener('click', () => { currentDispatchPage = 1; refreshDispatchTable(); });
     document.getElementById('clearDispatchFilter').addEventListener('click', () => {
         document.getElementById('dispatchZoneFilter').value = '';
@@ -879,140 +823,6 @@ async function loadDispatchPage() {
         refreshDispatchTable();
     });
     document.getElementById('newDispatchBtn').addEventListener('click', showNewDispatchModal);
-}
-
-// Complete dispatch with actual delivery data
-window.completeDispatchWithDelivery = async function(id, zoneId, datetime, predictedDeliveries, assignedVehicles, assignedDrivers) {
-    showModal('Complete Dispatch & Record Delivery', `
-        <div style="background: #e8f5e9; padding: 10px; border-radius: 8px; margin-bottom: 15px;">
-            <small style="color: #2e7d32;">⚠️ This data will be used to train the ML model for future predictions</small>
-        </div>
-        
-        <div style="background: #fff3e0; padding: 10px; border-radius: 8px; margin-bottom: 15px;">
-            <small style="color: #e65100;">🚚 Upon completion, the following will be set to AVAILABLE:</small>
-            <div style="margin-top: 8px;">
-                <small><strong>Vehicles:</strong> ${assignedVehicles || 'None'}</small><br>
-                <small><strong>Drivers:</strong> ${assignedDrivers || 'None'}</small>
-            </div>
-        </div>
-        
-        <div class="form-group">
-            <label>Actual Number of Deliveries *</label>
-            <input type="number" id="actualDeliveries" class="form-control" 
-                   placeholder="Enter actual delivery count" value="${predictedDeliveries}" required>
-            <small class="form-text text-muted">This will be added to historical data for ML training</small>
-        </div>
-        
-        <div class="form-group">
-            <label>Vehicle Type Used</label>
-            <select id="vehicleType" class="form-control">
-                <option value="motorcycle">🏍️ Motorcycle</option>
-                <option value="van">🚐 Van</option>
-                <option value="truck">🚚 Truck</option>
-                <option value="ebike">🛵 E-Bike</option>
-            </select>
-        </div>
-        
-        <div class="form-group">
-            <label>Distance Traveled (km)</label>
-            <input type="number" id="distanceKm" class="form-control" step="0.1" 
-                   placeholder="Auto-calculated if left empty">
-        </div>
-        
-        <div class="form-actions">
-            <button onclick="closeModal()" class="btn-secondary">Cancel</button>
-            <button onclick="saveCompletedDelivery(${id})" class="btn-primary">Complete & Free Resources</button>
-        </div>
-    `);
-};
-
-function showNewUserModal() {
-    showModal('Add New User', `
-        <div class="form-group">
-            <label>Username *</label>
-            <input type="text" id="userUsername" class="form-control" placeholder="e.g., johndoe">
-        </div>
-        <div class="form-group">
-            <label>Password *</label>
-            <input type="password" id="userPassword" class="form-control" placeholder="••••••••">
-        </div>
-        <div class="form-group">
-            <label>Full Name</label>
-            <input type="text" id="userFullName" class="form-control" placeholder="John Doe">
-        </div>
-        <div class="form-group">
-            <label>Email *</label>
-            <input type="email" id="userEmail" class="form-control" placeholder="john@example.com">
-        </div>
-        
-        <!-- RADIO BUTTONS FOR ROLE -->
-        <div class="form-group">
-            <label>Role</label>
-            <div style="display: flex; gap: 20px; flex-wrap: wrap; padding: 10px 0;">
-                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
-                    <input type="radio" name="userRole" value="dispatcher" checked> Dispatcher
-                </label>
-                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
-                    <input type="radio" name="userRole" value="admin"> Admin
-                </label>
-                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
-                    <input type="radio" name="userRole" value="manager"> Manager
-                </label>
-                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
-                    <input type="radio" name="userRole" value="driver"> Driver
-                </label>
-            </div>
-        </div>
-        
-        <div class="form-group driver-zone" style="display:none;">
-            <label>Zone Access (comma-separated)</label>
-            <input type="text" id="userZoneAccess" class="form-control" placeholder="ZONE_A,ZONE_B">
-            <small class="form-text text-muted">Only for drivers</small>
-        </div>
-        <div class="form-group">
-            <label>Status</label>
-            <select id="userStatus" class="form-control">
-                <option value="1">Active</option>
-                <option value="0">Inactive</option>
-            </select>
-        </div>
-        <div class="form-actions">
-            <button onclick="closeModal()" class="btn-secondary">Cancel</button>
-            <button onclick="saveUser()" class="btn-primary">Create User</button>
-        </div>
-    `);
-    
-    // Add event listener to show/hide zone access for drivers
-    setTimeout(() => {
-        const radioButtons = document.querySelectorAll('input[name="userRole"]');
-        const zoneDiv = document.querySelector('.driver-zone');
-        
-        if (radioButtons.length > 0 && zoneDiv) {
-            radioButtons.forEach(radio => {
-                radio.addEventListener('change', function() {
-                    zoneDiv.style.display = this.value === 'driver' ? 'block' : 'none';
-                    console.log("Role changed to:", this.value);
-                });
-            });
-        }
-    }, 50);
-}
-
-async function retrainModel() {
-    showLoading();
-    try {
-        const response = await fetch(`${API_BASE_URL}/retrain-model`, {
-            method: 'POST'
-        });
-        const data = await response.json();
-        if (data.success) {
-            alert('🔄 Model retraining started! New predictions will be more accurate.');
-        }
-    } catch (error) {
-        console.error('Retrain error:', error);
-    } finally {
-        hideLoading();
-    }
 }
 
 async function refreshDispatchTable() {
@@ -1056,23 +866,27 @@ async function refreshDispatchTable() {
                 </thead>
                 <tbody>
                     ${(data.assignments || []).map(ass => {
-                        // Determine which action buttons to show based on status
                         let actionButtons = '';
                         
-                        if (ass.dispatch_status === 'planned' || ass.dispatch_status === 'assigned') {
+                        if (ass.dispatch_status === 'planned') {
                             actionButtons = `
-                                <button class="btn-primary btn-sm" onclick="markAsEnroute(${ass.assignment_id})">🚚 Start</button>
+                                <button class="btn-primary btn-sm" onclick="quickStartDispatch(${ass.assignment_id})">▶ Start</button>
+                                <button class="btn-secondary btn-sm" onclick="editDispatch(${ass.assignment_id})">Edit</button>
+                                <button class="btn-danger btn-sm" onclick="deleteDispatch(${ass.assignment_id})">Delete</button>
+                            `;
+                        } else if (ass.dispatch_status === 'assigned') {
+                            actionButtons = `
+                                <button class="btn-primary btn-sm" onclick="markAsEnroute(${ass.assignment_id})">🚚 Start Route</button>
                                 <button class="btn-secondary btn-sm" onclick="editDispatch(${ass.assignment_id})">Edit</button>
                                 <button class="btn-danger btn-sm" onclick="deleteDispatch(${ass.assignment_id})">Delete</button>
                             `;
                         } else if (ass.dispatch_status === 'enroute') {
                             actionButtons = `
-                                <button class="btn-success btn-sm" onclick="completeDispatchWithDelivery(${ass.assignment_id}, '${ass.zone_id}', '${ass.dispatch_datetime}', ${ass.predicted_deliveries || 0}, '${ass.assigned_vehicles || ''}', '${ass.assigned_drivers || ''}')">✅ Complete</button>
+                                <button class="btn-success btn-sm" onclick="completeDispatchWithDelivery(${ass.assignment_id}, '${ass.zone_id}', '${ass.dispatch_datetime}', ${ass.predicted_deliveries || 0}, '${(ass.assigned_vehicles || '').replace(/'/g, "\\'")}', '${(ass.assigned_drivers || '').replace(/'/g, "\\'")}')" style="background: #16a34a;">✅ Complete</button>
                                 <button class="btn-secondary btn-sm" onclick="editDispatch(${ass.assignment_id})">Edit</button>
                                 <button class="btn-danger btn-sm" onclick="deleteDispatch(${ass.assignment_id})">Delete</button>
                             `;
                         } else {
-                            // completed or cancelled - only edit and delete
                             actionButtons = `
                                 <button class="btn-secondary btn-sm" onclick="editDispatch(${ass.assignment_id})">Edit</button>
                                 <button class="btn-danger btn-sm" onclick="deleteDispatch(${ass.assignment_id})">Delete</button>
@@ -1080,21 +894,21 @@ async function refreshDispatchTable() {
                         }
                         
                         return `
-                        <tr>
-                            <td>${ass.assignment_id}</small></td>
-                            <td><strong>${ass.zone_id}</strong><br><small>${ass.zone_name || ''}</small></small></td>
-                            <td><small>${new Date(ass.dispatch_datetime).toLocaleString()}</small></small></td>
-                            <td><strong>${ass.predicted_deliveries || '-'}</strong></small></td>
-                            <td>${ass.actual_deliveries || '-'}</small></td>
-                            <td><span class="status-badge" style="background:${getDemandColor(ass.demand_level)}20; color:${getDemandColor(ass.demand_level)}">${ass.demand_level || '-'}</span></small></td>
-                            <td><small>${ass.assigned_vehicles || '-'}</small></small></td>
-                            <td><small>${ass.assigned_drivers || '-'}</small></small></td>
-                            <td><span class="status-badge status-${ass.dispatch_status}">${ass.dispatch_status}</span></small></td>
-                            <td>${actionButtons}</td>
-                        </tr>
+                            <tr>
+                                <td>${ass.assignment_id}</td>
+                                <td><strong>${ass.zone_id}</strong><br><small>${ass.zone_name || ''}</small></td>
+                                <td><small>${new Date(ass.dispatch_datetime).toLocaleString()}</small></td>
+                                <td><strong>${ass.predicted_deliveries || '-'}</strong></td>
+                                <td>${ass.actual_deliveries || '-'}</td>
+                                <td><span class="status-badge" style="background:${getDemandColor(ass.demand_level)}20; color:${getDemandColor(ass.demand_level)}">${ass.demand_level || '-'}</span></td>
+                                <td><small>${ass.assigned_vehicles || '-'}</small></td>
+                                <td><small>${ass.assigned_drivers || '-'}</small></td>
+                                <td><span class="status-badge status-${ass.dispatch_status}">${ass.dispatch_status}</span></td>
+                                <td>${actionButtons}</td>
+                            </tr>
                         `;
                     }).join('')}
-                    ${(data.assignments || []).length === 0 ? '<tr><td colspan="10">No dispatch assignments found</td>' : ''}
+                    ${(data.assignments || []).length === 0 ? '<tr><td colspan="10">No dispatch assignments found</td></tr>' : ''}
                 </tbody>
             </table>
         `;
@@ -1127,543 +941,199 @@ function getDemandColor(demandLevel) {
     return '#16a34a';
 }
 
-function showNewDispatchModal() {
-    // Fetch vehicles and drivers first
-    fetchVehiclesAndDrivers().then(() => {
-        showModal('Create Dispatch Assignment', `
-            <div class="form-group">
-                <label>Zone ID *</label>
-                <select id="dispatchZoneId" class="form-control" style="width: 100%;" onchange="updateDemandLevel()">
-                    <option value="">Select a zone...</option>
-                    ${(zonesList || []).map(zone => `
-                        <option value="${zone.zone_id}">${zone.zone_id} - ${zone.zone_name}</option>
-                    `).join('')}
-                </select>
-            </div>
-            
-            <div class="form-group">
-                <label>Date & Time *</label>
-                <input type="datetime-local" id="dispatchDateTime" class="form-control">
-            </div>
-            
-            <div class="form-group">
-                <label>Number of Deliveries *</label>
-                <input type="number" id="deliveryCount" class="form-control" placeholder="Enter number of deliveries" onchange="updateDemandLevel()">
-            </div>
-            
-            <div class="form-group">
-                <label>Demand Level (Auto-calculated)</label>
-                <input type="text" id="demandLevelDisplay" class="form-control" readonly style="background: #f0f2f5; font-weight: bold;">
-            </div>
-            
-            <!-- Vehicles & Drivers Section -->
-            <div class="form-group">
-                <label>Vehicles & Drivers Assignment *</label>
-                <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 10px;">
-                    <div style="display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap;">
-                        <select id="vehicleSelect" class="form-control" style="flex: 1; min-width: 150px;">
-                            <option value="">Select a vehicle...</option>
-                            ${availableVehicles.filter(v => v.status === 'available').map(vehicle => `
-                                <option value="${vehicle.vehicle_id}">${vehicle.vehicle_code} - ${vehicle.vehicle_type} (${vehicle.plate_number || 'No plate'})</option>
-                            `).join('')}
-                        </select>
-                        <select id="driverSelect" class="form-control" style="flex: 1; min-width: 150px;">
-                            <option value="">Select a driver...</option>
-                            ${availableDrivers.map(driver => `
-                                <option value="${driver.user_id}">${driver.full_name || driver.username} (${driver.role}) - ${driver.zone_access || 'All Zones'}</option>
-                            `).join('')}
-                        </select>
-                        <button type="button" class="btn-primary" onclick="addVehicleDriverPair()" style="white-space: nowrap;">+ Add Pair</button>
-                    </div>
-                    <small class="form-text text-muted">Assign a vehicle with a specific driver. You can add multiple vehicle-driver pairs.</small>
-                </div>
-                <div id="selectedPairsList" style="margin-top: 10px; max-height: 200px; overflow-y: auto; border: 1px solid #ddd; border-radius: 8px; padding: 10px; background: #f8f9fa;">
-                    <div style="color: #666; text-align: center;">No vehicle-driver pairs added yet</div>
-                </div>
-            </div>
-            
-            <div class="form-group">
-                <label>Notes</label>
-                <textarea id="dispatchNotes" class="form-control" rows="3" placeholder="Optional notes..."></textarea>
-            </div>
-            
-            <div class="form-actions">
-                <button onclick="closeModal()" class="btn-secondary">Cancel</button>
-                <button onclick="saveDispatch()" class="btn-primary">Create Dispatch</button>
-            </div>
-        `);
-        
-        // Set default datetime to next hour
-        const now = new Date();
-        now.setHours(now.getHours() + 1);
-        now.setMinutes(0);
-        document.getElementById('dispatchDateTime').value = now.toISOString().slice(0, 16);
-        
-        // Clear selected pairs
-        selectedVehicles = [];
-        selectedDrivers = [];
-        updateSelectedPairsList();
-    });
-}
-
-async function fetchVehiclesAndDrivers() {
-    try {
-        // Fetch vehicles
-        const vehiclesResponse = await fetch(`${API_BASE_URL}/vehicles`);
-        const vehiclesData = await vehiclesResponse.json();
-        availableVehicles = vehiclesData.vehicles || [];
-        
-        // Fetch drivers (users with role 'driver')
-        const driversResponse = await fetch(`${API_BASE_URL}/users?role=driver`);
-        const driversData = await driversResponse.json();
-        availableDrivers = driversData.users || [];
-        
-        // Fetch zones if not already loaded
-        if (!zonesList || zonesList.length === 0) {
-            const zonesResponse = await fetch(`${API_BASE_URL}/zones`);
-            const zonesData = await zonesResponse.json();
-            zonesList = zonesData.zones || [];
-        }
-    } catch (error) {
-        console.error('Error fetching data:', error);
-    }
-}
-
-window.addVehicleDriverPair = function() {
-    const vehicleSelect = document.getElementById('vehicleSelect');
-    const driverSelect = document.getElementById('driverSelect');
-    const vehicleId = vehicleSelect.value;
-    const driverId = driverSelect.value;
-    
-    if (!vehicleId) {
-        alert('Please select a vehicle first');
+// ============ DISPATCH ACTIONS ============
+window.quickStartDispatch = async function(id) {
+    if (!confirm('Start this dispatch? This will assign vehicles and mark as enroute.')) {
         return;
     }
-    
-    if (!driverId) {
-        alert('Please select a driver first');
-        return;
-    }
-    
-    const vehicle = availableVehicles.find(v => v.vehicle_id == vehicleId);
-    const driver = availableDrivers.find(d => d.user_id == driverId);
-    
-    if (!vehicle || !driver) return;
-    
-    // Check if vehicle already added
-    if (selectedVehicles.some(v => v.vehicle_id == vehicleId)) {
-        alert(`Vehicle ${vehicle.vehicle_code} already assigned to a driver. Remove it first if you want to reassign.`);
-        return;
-    }
-    
-    // Check if vehicle is available
-    if (vehicle.status !== 'available') {
-        alert(`Vehicle ${vehicle.vehicle_code} is ${vehicle.status}. Cannot assign.`);
-        return;
-    }
-    
-    // Check if driver already assigned to another vehicle in this dispatch
-    if (selectedDrivers.some(d => d.driver_id == driverId)) {
-        alert(`Driver ${driver.full_name || driver.username} is already assigned to another vehicle in this dispatch.`);
-        return;
-    }
-    
-    selectedVehicles.push({
-        vehicle_id: vehicle.vehicle_id,
-        vehicle_code: vehicle.vehicle_code,
-        vehicle_type: vehicle.vehicle_type,
-        plate_number: vehicle.plate_number,
-        driver_id: driverId,
-        driver_name: driver.full_name || driver.username
-    });
-    
-    selectedDrivers.push({
-        driver_id: driverId,
-        driver_name: driver.full_name || driver.username,
-        vehicle_id: vehicle.vehicle_id,
-        vehicle_code: vehicle.vehicle_code
-    });
-    
-    updateSelectedPairsList();
-    
-    // Clear selections for next pair
-    vehicleSelect.value = '';
-    driverSelect.value = '';
-};
-
-function updateSelectedPairsList() {
-    const container = document.getElementById('selectedPairsList');
-    if (!container) return;
-    
-    if (selectedVehicles.length === 0) {
-        container.innerHTML = '<div style="color: #666; text-align: center;">No vehicle-driver pairs added yet</div>';
-        return;
-    }
-    
-    container.innerHTML = selectedVehicles.map(pair => `
-        <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px; margin-bottom: 8px; background: white; border-radius: 8px; border: 1px solid #e0e0e0;">
-            <div style="flex: 1;">
-                <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
-                    <div>
-                        <strong>🚗 ${pair.vehicle_code}</strong><br>
-                        <small>${pair.vehicle_type} | ${pair.plate_number || 'No plate'}</small>
-                    </div>
-                    <div>
-                        <i class="fas fa-arrow-right"></i>
-                    </div>
-                    <div>
-                        <strong>👤 ${pair.driver_name}</strong><br>
-                        <small>Driver</small>
-                    </div>
-                </div>
-            </div>
-            <button class="btn-danger btn-sm" onclick="removeVehicleDriverPair(${pair.vehicle_id}, ${pair.driver_id})">Remove</button>
-        </div>
-    `).join('');
-}
-
-window.removeVehicleDriverPair = function(vehicleId, driverId) {
-    selectedVehicles = selectedVehicles.filter(v => v.vehicle_id != vehicleId);
-    selectedDrivers = selectedDrivers.filter(d => d.driver_id != driverId);
-    updateSelectedPairsList();
-};
-
-window.updateDemandLevel = function() {
-    const deliveryCount = parseInt(document.getElementById('deliveryCount')?.value) || 0;
-    const zoneId = document.getElementById('dispatchZoneId')?.value;
-    const demandDisplay = document.getElementById('demandLevelDisplay');
-    
-    if (!demandDisplay) return;
-    
-    // Find zone thresholds
-    const zone = zonesList.find(z => z.zone_id === zoneId);
-    if (!zone) {
-        demandDisplay.value = 'Select zone first';
-        demandDisplay.style.color = '#666';
-        return;
-    }
-    
-    let demandLevel = '';
-    let color = '';
-    
-    if (deliveryCount <= zone.threshold_normal) {
-        demandLevel = 'Normal Demand';
-        color = '#16a34a';
-    } else if (deliveryCount <= zone.threshold_high) {
-        demandLevel = 'High Demand';
-        color = '#ea580c';
-    } else {
-        demandLevel = 'Peak Risk';
-        color = '#dc2626';
-    }
-    
-    demandDisplay.value = demandLevel;
-    demandDisplay.style.color = color;
-    demandDisplay.style.fontWeight = 'bold';
-};
-
-window.saveDispatch = async function() {
-    const zoneId = document.getElementById('dispatchZoneId').value;
-    const datetime = document.getElementById('dispatchDateTime').value;
-    const deliveryCount = document.getElementById('deliveryCount').value;
-    const notes = document.getElementById('dispatchNotes').value;
-    
-    // Validation
-    if (!zoneId) {
-        alert('Please select a zone');
-        return;
-    }
-    
-    if (!datetime) {
-        alert('Please select date and time');
-        return;
-    }
-    
-    if (!deliveryCount) {
-        alert('Please enter number of deliveries');
-        return;
-    }
-    
-    if (selectedVehicles.length === 0) {
-        alert('Please add at least one vehicle-driver pair');
-        return;
-    }
-    
-    // Get demand level based on delivery count
-    const zone = zonesList.find(z => z.zone_id === zoneId);
-    let demandLevel = '';
-    if (deliveryCount <= zone.threshold_normal) {
-        demandLevel = 'Normal Demand';
-    } else if (deliveryCount <= zone.threshold_high) {
-        demandLevel = 'High Demand';
-    } else {
-        demandLevel = 'Peak Risk';
-    }
-    
-    // Format assigned vehicles and drivers as strings
-    const assignedVehiclesStr = selectedVehicles.map(v => `${v.vehicle_code} (${v.vehicle_type})`).join(', ');
-    const assignedDriversStr = selectedDrivers.map(d => d.driver_name).join(', ');
-    
-    const data = {
-        zone_id: zoneId,
-        dispatch_datetime: datetime.replace('T', ' ') + ':00',
-        predicted_deliveries: parseInt(deliveryCount),
-        actual_deliveries: null,
-        demand_level: demandLevel,
-        assigned_vehicles: assignedVehiclesStr,
-        assigned_drivers: assignedDriversStr,
-        dispatch_status: 'planned',
-        notes: notes,
-        created_by: 1
-    };
     
     showLoading();
-    
     try {
-        // Create dispatch assignment
-        const response = await fetch(`${API_BASE_URL}/dispatch/assignments`, {
-            method: 'POST',
+        const checkResponse = await fetch(`${API_BASE_URL}/dispatch/assignments`);
+        const checkData = await checkResponse.json();
+        const dispatch = checkData.assignments.find(a => a.assignment_id === id);
+        
+        if (!dispatch) {
+            alert('Dispatch not found');
+            hideLoading();
+            return;
+        }
+        
+        if (dispatch.dispatch_status === 'planned') {
+            let assignResponse = await fetch(`${API_BASE_URL}/dispatch/assignments/${id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ dispatch_status: 'assigned' })
+            });
+            
+            let assignData = await assignResponse.json();
+            if (!assignData.success) {
+                alert('Error assigning: ' + assignData.error);
+                hideLoading();
+                return;
+            }
+        }
+        
+        const enrouteResponse = await fetch(`${API_BASE_URL}/dispatch/assignments/${id}/enroute`, {
+            method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data)
+            credentials: 'include'
         });
         
-        const result = await response.json();
+        const enrouteData = await enrouteResponse.json();
         
-        if (result.success) {
-            // Update each vehicle status and create driver assignments
-            const shiftDate = datetime.split('T')[0];
-            const shiftTime = datetime.split('T')[1];
-            const endTime = new Date(new Date(datetime).getTime() + 8*60*60*1000).toISOString().slice(11, 16);
-            
-            for (const pair of selectedVehicles) {
-                // Update vehicle status
-                await fetch(`${API_BASE_URL}/vehicles/${pair.vehicle_id}`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
-                        status: 'assigned', 
-                        driver_id: pair.driver_id,
-                        assigned_zone: zoneId
-                    })
-                });
-                
-                // Create driver assignment for this vehicle-driver pair
-                await fetch(`${API_BASE_URL}/driver/assignments`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        driver_id: parseInt(pair.driver_id),
-                        vehicle_id: pair.vehicle_id,
-                        shift_date: shiftDate,
-                        shift_start: shiftTime,
-                        shift_end: endTime,
-                        zone_id: zoneId,
-                        status: 'scheduled'
-                    })
-                });
-            }
-            
-            alert(`Dispatch assignment created successfully!\nAssigned: ${selectedVehicles.length} vehicle(s) with ${selectedDrivers.length} driver(s)`);
-            closeModal();
-            refreshCurrentPage();
+        if (enrouteData.success) {
+            alert('✅ Dispatch started! Now ENROUTE.');
+            refreshDispatchTable();
+            if (currentPage === 'dashboard') loadDashboard();
         } else {
-            alert('Error: ' + (result.error || 'Failed to create dispatch'));
+            alert('Error: ' + enrouteData.error);
         }
     } catch (error) {
-        console.error('Error creating dispatch:', error);
-        alert('Error creating dispatch assignment');
+        console.error('Error:', error);
+        alert('Error starting dispatch: ' + error.message);
     } finally {
         hideLoading();
     }
 };
 
-window.editDispatch = async function(id) {
-    // Fetch dispatch details
-    const response = await fetch(`${API_BASE_URL}/dispatch/assignments`);
-    const data = await response.json();
-    const assignment = data.assignments.find(a => a.assignment_id === id);
-    
-    if (!assignment) return;
-    
-    // Fetch vehicles and drivers
-    await fetchVehiclesAndDrivers();
-    
-    // Parse existing vehicle-driver pairs from the assignment
-    selectedVehicles = [];
-    selectedDrivers = [];
-    
-    if (assignment.assigned_vehicles && assignment.assigned_drivers) {
-        const vehiclePairs = assignment.assigned_vehicles.split(',');
-        const driverNames = assignment.assigned_drivers.split(',');
-        
-        // Try to match existing vehicles and drivers
-        for (let i = 0; i < vehiclePairs.length; i++) {
-            const vehicleCode = vehiclePairs[i].trim().split(' ')[0];
-            const vehicle = availableVehicles.find(v => v.vehicle_code === vehicleCode);
-            const driver = availableDrivers.find(d => (d.full_name || d.username) === driverNames[i]?.trim());
-            
-            if (vehicle && driver) {
-                selectedVehicles.push({
-                    vehicle_id: vehicle.vehicle_id,
-                    vehicle_code: vehicle.vehicle_code,
-                    vehicle_type: vehicle.vehicle_type,
-                    plate_number: vehicle.plate_number,
-                    driver_id: driver.user_id,
-                    driver_name: driver.full_name || driver.username
-                });
-                
-                selectedDrivers.push({
-                    driver_id: driver.user_id,
-                    driver_name: driver.full_name || driver.username,
-                    vehicle_id: vehicle.vehicle_id,
-                    vehicle_code: vehicle.vehicle_code
-                });
-            }
-        }
+window.markAsEnroute = async function(id) {
+    if (!confirm('Start the route? This will mark the dispatch as ENROUTE.')) {
+        return;
     }
     
-    showModal('Edit Dispatch Assignment', `
-        <div class="form-group">
-            <label>Zone ID</label>
-            <select id="dispatchZoneId" class="form-control" onchange="updateDemandLevel()">
-                ${(zonesList || []).map(zone => `
-                    <option value="${zone.zone_id}" ${assignment.zone_id === zone.zone_id ? 'selected' : ''}>${zone.zone_id} - ${zone.zone_name}</option>
-                `).join('')}
-            </select>
-        </div>
-        
-        <div class="form-group">
-            <label>Date & Time</label>
-            <input type="datetime-local" id="dispatchDateTime" class="form-control" value="${assignment.dispatch_datetime ? assignment.dispatch_datetime.slice(0, 16) : ''}">
-        </div>
-        
-        <div class="form-group">
-            <label>Number of Deliveries</label>
-            <input type="number" id="deliveryCount" class="form-control" value="${assignment.predicted_deliveries || ''}" onchange="updateDemandLevel()">
-        </div>
-        
-        <div class="form-group">
-            <label>Demand Level (Auto-calculated)</label>
-            <input type="text" id="demandLevelDisplay" class="form-control" readonly style="background: #f0f2f5;">
-        </div>
-        
-        <div class="form-group">
-            <label>Status</label>
-            <select id="dispatchStatus" class="form-control">
-                <option value="planned" ${assignment.dispatch_status === 'planned' ? 'selected' : ''}>Planned</option>
-                <option value="assigned" ${assignment.dispatch_status === 'assigned' ? 'selected' : ''}>Assigned</option>
-                <option value="enroute" ${assignment.dispatch_status === 'enroute' ? 'selected' : ''}>En Route</option>
-                <option value="completed" ${assignment.dispatch_status === 'completed' ? 'selected' : ''}>Completed</option>
-                <option value="cancelled" ${assignment.dispatch_status === 'cancelled' ? 'selected' : ''}>Cancelled</option>
-            </select>
-        </div>
-        
-        <!-- Vehicles & Drivers Section -->
-        <div class="form-group">
-            <label>Vehicles & Drivers Assignment</label>
-            <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 10px;">
-                <div style="display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap;">
-                    <select id="vehicleSelect" class="form-control" style="flex: 1; min-width: 150px;">
-                        <option value="">Select a vehicle...</option>
-                        ${availableVehicles.filter(v => v.status === 'available' || selectedVehicles.some(sv => sv.vehicle_id === v.vehicle_id)).map(vehicle => `
-                            <option value="${vehicle.vehicle_id}">${vehicle.vehicle_code} - ${vehicle.vehicle_type} (${vehicle.status})</option>
-                        `).join('')}
-                    </select>
-                    <select id="driverSelect" class="form-control" style="flex: 1; min-width: 150px;">
-                        <option value="">Select a driver...</option>
-                        ${availableDrivers.map(driver => `
-                            <option value="${driver.user_id}">${driver.full_name || driver.username} (${driver.role})</option>
-                        `).join('')}
-                    </select>
-                    <button type="button" class="btn-primary" onclick="addVehicleDriverPair()">+ Add Pair</button>
-                </div>
-                <small class="form-text text-muted">Add vehicle-driver pairs. Each pair represents one vehicle with its assigned driver.</small>
-            </div>
-            <div id="selectedPairsList" style="margin-top: 10px; max-height: 200px; overflow-y: auto; border: 1px solid #ddd; border-radius: 8px; padding: 10px; background: #f8f9fa;"></div>
-        </div>
-        
-        <div class="form-group">
-            <label>Notes</label>
-            <textarea id="dispatchNotes" class="form-control" rows="3">${assignment.notes || ''}</textarea>
-        </div>
-        
-        <div class="form-actions">
-            <button onclick="closeModal()" class="btn-secondary">Cancel</button>
-            <button onclick="updateDispatch(${assignment.assignment_id})" class="btn-primary">Update</button>
-        </div>
-    `);
-    
-    // Update selected pairs list display
-    updateSelectedPairsList();
-    updateDemandLevel();
-};
-
-window.updateDispatch = async function(id) {
-    const zoneId = document.getElementById('dispatchZoneId').value;
-    const datetime = document.getElementById('dispatchDateTime').value;
-    const deliveryCount = document.getElementById('deliveryCount').value;
-    const status = document.getElementById('dispatchStatus').value;
-    const notes = document.getElementById('dispatchNotes').value;
-    
-    // Get demand level based on delivery count
-    const zone = zonesList.find(z => z.zone_id === zoneId);
-    let demandLevel = '';
-    if (deliveryCount <= zone.threshold_normal) {
-        demandLevel = 'Normal Demand';
-    } else if (deliveryCount <= zone.threshold_high) {
-        demandLevel = 'High Demand';
-    } else {
-        demandLevel = 'Peak Risk';
-    }
-    
-    // Format assigned vehicles and drivers as strings
-    const assignedVehiclesStr = selectedVehicles.map(v => `${v.vehicle_code} (${v.vehicle_type})`).join(', ');
-    const assignedDriversStr = selectedDrivers.map(d => d.driver_name).join(', ');
-    
-    const data = {
-        zone_id: zoneId,
-        dispatch_datetime: datetime.replace('T', ' ') + ':00',
-        predicted_deliveries: parseInt(deliveryCount),
-        demand_level: demandLevel,
-        assigned_vehicles: assignedVehiclesStr,
-        assigned_drivers: assignedDriversStr,
-        dispatch_status: status,
-        notes: notes
-    };
-    
-    if (status === 'completed') {
-        data.completed_at = new Date().toISOString().slice(0, 19).replace('T', ' ');
-    }
-    
+    showLoading();
     try {
-        const response = await fetch(`${API_BASE_URL}/dispatch/assignments/${id}`, {
+        const response = await fetch(`${API_BASE_URL}/dispatch/assignments/${id}/enroute`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data)
+            credentials: 'include'
         });
-        const result = await response.json();
-        if (result.success) {
-            alert('Dispatch assignment updated successfully!');
-            closeModal();
-            refreshCurrentPage();
+        const data = await response.json();
+        
+        if (data.success) {
+            alert('✅ Dispatch is now ENROUTE!');
+            refreshDispatchTable();
+            if (currentPage === 'dashboard') loadDashboard();
         } else {
-            alert('Error: ' + result.error);
+            alert('Error: ' + data.error);
         }
     } catch (error) {
-        alert('Error updating dispatch');
+        console.error('Error:', error);
+        alert('Error starting dispatch');
+    } finally {
+        hideLoading();
     }
 };
 
-window.deleteDispatch = async function(id) {
-    if (confirm('Are you sure you want to delete this dispatch assignment?')) {
-        try {
-            const response = await fetch(`${API_BASE_URL}/dispatch/assignments/${id}`, { method: 'DELETE' });
-            const data = await response.json();
-            if (data.success) refreshDispatchTable();
-            else alert('Error deleting assignment');
-        } catch (error) {
-            alert('Error deleting assignment');
+window.completeDispatchWithDelivery = async function(id, zoneId, datetime, predictedDeliveries, assignedVehicles, assignedDrivers) {
+    showModal('Complete Dispatch & Record Delivery', `
+        <div style="background: #e8f5e9; padding: 10px; border-radius: 8px; margin-bottom: 15px;">
+            <small style="color: #2e7d32;">⚠️ This data will be used to train the ML model for future predictions</small>
+        </div>
+        
+        <div style="background: #fff3e0; padding: 10px; border-radius: 8px; margin-bottom: 15px;">
+            <small style="color: #e65100;">🚚 Upon completion, the following will be set to AVAILABLE:</small>
+            <div style="margin-top: 8px;">
+                <small><strong>Vehicles:</strong> ${assignedVehicles || 'None'}</small><br>
+                <small><strong>Drivers:</strong> ${assignedDrivers || 'None'}</small>
+            </div>
+        </div>
+        
+        <div class="form-group">
+            <label>Actual Number of Deliveries *</label>
+            <input type="number" id="actualDeliveries" class="form-control" 
+                   placeholder="Enter actual delivery count" value="${predictedDeliveries}" required>
+            <small class="form-text text-muted">This will be added to historical data for ML training</small>
+        </div>
+        
+        <div class="form-group">
+            <label>Vehicle Type Used</label>
+            <select id="vehicleType" class="form-control">
+                <option value="motorcycle">🏍️ Motorcycle</option>
+                <option value="van">🚐 Van</option>
+                <option value="truck">🚚 Truck</option>
+                <option value="ebike">🛵 E-Bike</option>
+            </select>
+        </div>
+        
+        <div class="form-group">
+            <label>Distance Traveled (km)</label>
+            <input type="number" id="distanceKm" class="form-control" step="0.1" 
+                   placeholder="Auto-calculated if left empty">
+        </div>
+        
+        <div class="form-actions" style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px;">
+            <button onclick="closeModal()" class="btn-secondary" style="padding: 10px 20px;">Cancel</button>
+            <button onclick="saveCompletedDelivery(${id})" class="btn-primary" style="padding: 10px 20px; background: #16a34a;">Complete & Free Resources</button>
+        </div>
+    `);
+};
+
+window.saveCompletedDelivery = async function(assignmentId) {
+    console.log("🔵 saveCompletedDelivery called for assignment:", assignmentId);
+    
+    const actualDeliveriesInput = document.getElementById('actualDeliveries');
+    const vehicleTypeSelect = document.getElementById('vehicleType');
+    const distanceKmInput = document.getElementById('distanceKm');
+    
+    if (!actualDeliveriesInput) {
+        console.error("Could not find actualDeliveries input field");
+        alert('Error: Form fields not found. Please try again.');
+        return;
+    }
+    
+    const actualDeliveries = actualDeliveriesInput.value;
+    const vehicleType = vehicleTypeSelect ? vehicleTypeSelect.value : 'motorcycle';
+    const distanceKm = distanceKmInput ? distanceKmInput.value : null;
+    
+    if (!actualDeliveries || actualDeliveries < 0) {
+        alert('Please enter valid number of deliveries');
+        return;
+    }
+    
+    console.log("📤 Sending completion data:", {
+        assignment_id: assignmentId,
+        actual_deliveries: parseInt(actualDeliveries),
+        vehicle_type: vehicleType,
+        distance_km: distanceKm ? parseFloat(distanceKm) : null
+    });
+    
+    showLoading();
+    
+    try {
+        const response = await fetch(`${API_BASE_URL}/dispatch/assignments/${assignmentId}/complete-with-delivery`, {
+            method: 'POST',
+            headers: { 
+                'Content-Type': 'application/json'
+            },
+            credentials: 'include',
+            body: JSON.stringify({
+                actual_deliveries: parseInt(actualDeliveries),
+                vehicle_type: vehicleType,
+                distance_km: distanceKm ? parseFloat(distanceKm) : null
+            })
+        });
+        
+        const data = await response.json();
+        console.log("📥 Server response:", data);
+        
+        if (data.success) {
+            alert(`✅ Dispatch completed successfully!\n\nDelivery record #${data.delivery_record_id} created.\nVehicles and drivers have been freed up.`);
+            closeModal();
+            refreshDispatchTable();
+            if (currentPage === 'dashboard') {
+                loadDashboard();
+            }
+        } else {
+            alert('Error: ' + (data.error || 'Failed to complete dispatch'));
         }
+    } catch (error) {
+        console.error('❌ Error completing dispatch:', error);
+        alert('Error completing dispatch: ' + error.message);
+    } finally {
+        hideLoading();
     }
 };
 
@@ -1905,7 +1375,6 @@ async function loadUsersPage() {
         </div>
     `;
     
-    // Setup event listeners FIRST
     document.getElementById('applyUserFilter').addEventListener('click', () => refreshUsersTable());
     document.getElementById('clearUserFilter').addEventListener('click', () => {
         document.getElementById('userRoleFilter').value = '';
@@ -1913,7 +1382,6 @@ async function loadUsersPage() {
     });
     document.getElementById('newUserBtn').addEventListener('click', showNewUserModal);
     
-    // THEN load the users data
     await refreshUsersTable();
 }
 
@@ -1923,12 +1391,8 @@ async function refreshUsersTable() {
     if (role) url += `?role=${role}`;
     
     const container = document.getElementById('usersTableContainer');
-    if (!container) {
-        console.error('usersTableContainer not found');
-        return;
-    }
+    if (!container) return;
     
-    // Show loading state
     container.innerHTML = '<div class="loading-placeholder"><div class="loading-spinner-small"></div><p>Loading users...</p></div>';
     
     try {
@@ -1970,11 +1434,11 @@ async function refreshUsersTable() {
                         <tr>
                             <td><strong>${escapeHtml(user.username)}</strong></td>
                             <td>${escapeHtml(user.full_name || '-')}</td>
-                            <td>${escapeHtml(user.email)}</small></td>
+                            <td>${escapeHtml(user.email)}</td>
                             <td><span class="status-badge" style="background:#667eea20; color:#667eea">${user.role}</span></td>
-                            <td>${user.role === 'driver' ? (escapeHtml(user.zone_access) || '-') : '-'}</small></td>
+                            <td>${user.role === 'driver' ? (escapeHtml(user.zone_access) || 'All Zones') : '-'}</td>
                             <td>${user.is_active ? '<span class="status-badge status-available">Active</span>' : '<span class="status-badge status-repair">Inactive</span>'}</td>
-                            <td>${user.last_login ? new Date(user.last_login).toLocaleString() : '-'}</small></td>
+                            <td>${user.last_login ? new Date(user.last_login).toLocaleString() : '-'}</td>
                             <td>
                                 <button class="btn-secondary btn-sm" onclick="editUser(${user.user_id})">Edit</button>
                                 <button class="btn-danger btn-sm" onclick="deleteUser(${user.user_id})">Delete</button>
@@ -1997,37 +1461,72 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+function showNewUserModal() {
+    showModal('Add New User', `
+        <div class="form-group">
+            <label>Username *</label>
+            <input type="text" id="userUsername" class="form-control" placeholder="e.g., johndoe">
+        </div>
+        <div class="form-group">
+            <label>Password *</label>
+            <input type="password" id="userPassword" class="form-control" placeholder="••••••••">
+        </div>
+        <div class="form-group">
+            <label>Full Name</label>
+            <input type="text" id="userFullName" class="form-control" placeholder="John Doe">
+        </div>
+        <div class="form-group">
+            <label>Email *</label>
+            <input type="email" id="userEmail" class="form-control" placeholder="john@example.com">
+        </div>
+        
+        <div class="form-group">
+            <label>Role</label>
+            <div style="display: flex; gap: 20px; flex-wrap: wrap; padding: 10px 0;">
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                    <input type="radio" name="userRole" value="dispatcher" checked> Dispatcher
+                </label>
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                    <input type="radio" name="userRole" value="admin"> Admin
+                </label>
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                    <input type="radio" name="userRole" value="manager"> Manager
+                </label>
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                    <input type="radio" name="userRole" value="driver"> Driver
+                </label>
+            </div>
+        </div>
+        
+        <div class="form-group">
+            <label>Status</label>
+            <select id="userStatus" class="form-control">
+                <option value="1">Active</option>
+                <option value="0">Inactive</option>
+            </select>
+        </div>
+        <div class="form-actions">
+            <button onclick="closeModal()" class="btn-secondary">Cancel</button>
+            <button onclick="saveUser()" class="btn-primary">Create User</button>
+        </div>
+    `);
+}
+
 window.saveUser = async function() {
-    console.log("🔵 SAVE USER CALLED");
-    
-    // Wait to ensure modal content is fully rendered
     await new Promise(resolve => setTimeout(resolve, 100));
     
-    // Get form values
     const username = document.getElementById('userUsername')?.value || '';
     const password = document.getElementById('userPassword')?.value || '';
     const fullName = document.getElementById('userFullName')?.value || '';
     const email = document.getElementById('userEmail')?.value || '';
-    const zoneAccess = document.getElementById('userZoneAccess')?.value || '';
     const isActive = parseInt(document.getElementById('userStatus')?.value || '1');
     
-    // GET ROLE FROM RADIO BUTTONS
     const selectedRole = document.querySelector('input[name="userRole"]:checked');
-    let role = 'dispatcher'; // default
+    let role = 'dispatcher';
     if (selectedRole) {
         role = selectedRole.value;
-        console.log("✅ Selected role from radio:", role);
-    } else {
-        console.warn("⚠️ No radio button selected, using default:", role);
     }
     
-    console.log("📋 FORM VALUES:");
-    console.log("  Username:", username);
-    console.log("  Email:", email);
-    console.log("  Selected Role:", role);
-    console.log("==================");
-    
-    // Validation
     if (!username) { alert('Username is required'); return; }
     if (!password) { alert('Password is required'); return; }
     if (password.length < 4) { alert('Password must be at least 4 characters'); return; }
@@ -2039,11 +1538,9 @@ window.saveUser = async function() {
         full_name: fullName || null,
         email: email,
         role: role,
-        zone_access: role === 'driver' ? zoneAccess : null,
+        zone_access: null,
         is_active: isActive
     };
-    
-    console.log("📤 SENDING DATA:", JSON.stringify(data, null, 2));
     
     showLoading();
     
@@ -2051,11 +1548,11 @@ window.saveUser = async function() {
         const response = await fetch(`${API_BASE_URL}/users`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
             body: JSON.stringify(data)
         });
         
         const result = await response.json();
-        console.log("📥 BACKEND RESPONSE:", result);
         
         if (result.success) {
             alert(`✅ User "${username}" created successfully!\nRole: ${result.role || role}`);
@@ -2073,14 +1570,12 @@ window.saveUser = async function() {
 };
 
 window.editUser = async function(id) {
-    // Fetch user data
     const response = await fetch(`${API_BASE_URL}/users`);
     const data = await response.json();
     const user = data.users.find(u => u.user_id === id);
     
     if (!user) return;
     
-    // Determine which role is selected
     const roleOptions = ['dispatcher', 'admin', 'manager', 'driver'];
     const roleLabels = {
         'dispatcher': 'Dispatcher',
@@ -2108,7 +1603,6 @@ window.editUser = async function(id) {
             <input type="email" id="userEmail" class="form-control" value="${escapeHtml(user.email)}">
         </div>
         
-        <!-- RADIO BUTTONS FOR ROLE -->
         <div class="form-group">
             <label>Role</label>
             <div style="display: flex; gap: 20px; flex-wrap: wrap; padding: 10px 0;">
@@ -2121,11 +1615,6 @@ window.editUser = async function(id) {
             </div>
         </div>
         
-        <div class="form-group driver-zone" style="${user.role === 'driver' ? 'display:block;' : 'display:none;'}">
-            <label>Zone Access (comma-separated)</label>
-            <input type="text" id="userZoneAccess" class="form-control" value="${escapeHtml(user.zone_access || '')}">
-            <small class="form-text text-muted">Only for drivers</small>
-        </div>
         <div class="form-group">
             <label>Status</label>
             <select id="userStatus" class="form-control">
@@ -2138,47 +1627,27 @@ window.editUser = async function(id) {
             <button onclick="updateUser(${user.user_id})" class="btn-primary">Update User</button>
         </div>
     `);
-    
-    // Add event listener to show/hide zone access for drivers
-    setTimeout(() => {
-        const radioButtons = document.querySelectorAll('input[name="userRole"]');
-        const zoneDiv = document.querySelector('.driver-zone');
-        
-        if (radioButtons.length > 0 && zoneDiv) {
-            radioButtons.forEach(radio => {
-                radio.addEventListener('change', function() {
-                    zoneDiv.style.display = this.value === 'driver' ? 'block' : 'none';
-                });
-            });
-        }
-    }, 50);
 };
 
-
 window.updateUser = async function(id) {
-    // Get values from form
     const fullName = document.getElementById('userFullName')?.value || '';
     const email = document.getElementById('userEmail')?.value || '';
     const password = document.getElementById('userPassword')?.value || '';
-    const zoneAccess = document.getElementById('userZoneAccess')?.value || '';
     const isActive = parseInt(document.getElementById('userStatus')?.value || '1');
     
-    // GET ROLE FROM RADIO BUTTONS
     const selectedRole = document.querySelector('input[name="userRole"]:checked');
-    let role = 'dispatcher'; // default
+    let role = 'dispatcher';
     if (selectedRole) {
         role = selectedRole.value;
-        console.log("✅ Selected role from radio (edit):", role);
     }
     
-    // Validation
     if (!email) { alert('Email is required'); return; }
     
     const data = {
         full_name: fullName || null,
         email: email,
         role: role,
-        zone_access: role === 'driver' ? zoneAccess : null,
+        zone_access: null,
         is_active: isActive
     };
     
@@ -2189,14 +1658,13 @@ window.updateUser = async function(id) {
         return;
     }
     
-    console.log("📤 UPDATING USER:", JSON.stringify(data, null, 2));
-    
     showLoading();
     
     try {
         const response = await fetch(`${API_BASE_URL}/users/${id}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
             body: JSON.stringify(data)
         });
         
@@ -2245,36 +1713,500 @@ document.addEventListener('click', (e) => {
     if (e.target === modal) closeModal();
 });
 
-// Mark dispatch as enroute
-// Mark dispatch as enroute (Start)
-window.markAsEnroute = async function(id) {
-    if (!confirm('Start this dispatch? This will mark vehicles as assigned and drivers as active.')) {
+// ============ DISPATCH MODAL FUNCTIONS ============
+function showNewDispatchModal() {
+    fetchVehiclesAndDrivers().then(() => {
+        showModal('Create Dispatch Assignment', `
+            <div class="form-group">
+                <label>Zone ID *</label>
+                <select id="dispatchZoneId" class="form-control" style="width: 100%;" onchange="updateDemandLevel()">
+                    <option value="">Select a zone...</option>
+                    ${(zonesList || []).map(zone => `
+                        <option value="${zone.zone_id}">${zone.zone_id} - ${zone.zone_name}</option>
+                    `).join('')}
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label>Date & Time *</label>
+                <input type="datetime-local" id="dispatchDateTime" class="form-control">
+            </div>
+            
+            <div class="form-group">
+                <label>Number of Deliveries *</label>
+                <input type="number" id="deliveryCount" class="form-control" placeholder="Enter number of deliveries" onchange="updateDemandLevel()">
+            </div>
+            
+            <div class="form-group">
+                <label>Demand Level (Auto-calculated)</label>
+                <input type="text" id="demandLevelDisplay" class="form-control" readonly style="background: #f0f2f5; font-weight: bold;">
+            </div>
+            
+            <div class="form-group">
+                <label>Vehicles & Drivers Assignment *</label>
+                <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 10px;">
+                    <div style="display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap;">
+                        <select id="vehicleSelect" class="form-control" style="flex: 1; min-width: 150px;">
+                            <option value="">Select a vehicle...</option>
+                            ${availableVehicles.filter(v => v.status === 'available').map(vehicle => `
+                                <option value="${vehicle.vehicle_id}">${vehicle.vehicle_code} - ${vehicle.vehicle_type} (${vehicle.plate_number || 'No plate'})</option>
+                            `).join('')}
+                        </select>
+                        <select id="driverSelect" class="form-control" style="flex: 1; min-width: 150px;">
+                            <option value="">Select a driver...</option>
+                            ${availableDrivers.map(driver => `
+                                <option value="${driver.user_id}">${driver.full_name || driver.username} (${driver.role})</option>
+                            `).join('')}
+                        </select>
+                        <button type="button" class="btn-primary" onclick="addVehicleDriverPair()" style="white-space: nowrap;">+ Add Pair</button>
+                    </div>
+                    <small class="form-text text-muted">Assign a vehicle with a specific driver. You can add multiple vehicle-driver pairs.</small>
+                </div>
+                <div id="selectedPairsList" style="margin-top: 10px; max-height: 200px; overflow-y: auto; border: 1px solid #ddd; border-radius: 8px; padding: 10px; background: #f8f9fa;">
+                    <div style="color: #666; text-align: center;">No vehicle-driver pairs added yet</div>
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <label>Notes</label>
+                <textarea id="dispatchNotes" class="form-control" rows="3" placeholder="Optional notes..."></textarea>
+            </div>
+            
+            <div class="form-actions">
+                <button onclick="closeModal()" class="btn-secondary">Cancel</button>
+                <button onclick="saveDispatch()" class="btn-primary">Create Dispatch</button>
+            </div>
+        `);
+        
+        const now = new Date();
+        now.setHours(now.getHours() + 1);
+        now.setMinutes(0);
+        document.getElementById('dispatchDateTime').value = now.toISOString().slice(0, 16);
+        
+        selectedVehicles = [];
+        selectedDrivers = [];
+        updateSelectedPairsList();
+    });
+}
+
+async function fetchVehiclesAndDrivers() {
+    try {
+        const vehiclesResponse = await fetch(`${API_BASE_URL}/vehicles`);
+        const vehiclesData = await vehiclesResponse.json();
+        availableVehicles = vehiclesData.vehicles || [];
+        
+        const driversResponse = await fetch(`${API_BASE_URL}/users?role=driver`);
+        const driversData = await driversResponse.json();
+        availableDrivers = driversData.users || [];
+        
+        if (!zonesList || zonesList.length === 0) {
+            const zonesResponse = await fetch(`${API_BASE_URL}/zones`);
+            const zonesData = await zonesResponse.json();
+            zonesList = zonesData.zones || [];
+        }
+    } catch (error) {
+        console.error('Error fetching data:', error);
+    }
+}
+
+window.addVehicleDriverPair = function() {
+    const vehicleSelect = document.getElementById('vehicleSelect');
+    const driverSelect = document.getElementById('driverSelect');
+    const vehicleId = vehicleSelect.value;
+    const driverId = driverSelect.value;
+    
+    if (!vehicleId) { alert('Please select a vehicle first'); return; }
+    if (!driverId) { alert('Please select a driver first'); return; }
+    
+    const vehicle = availableVehicles.find(v => v.vehicle_id == vehicleId);
+    const driver = availableDrivers.find(d => d.user_id == driverId);
+    
+    if (!vehicle || !driver) return;
+    
+    if (selectedVehicles.some(v => v.vehicle_id == vehicleId)) {
+        alert(`Vehicle ${vehicle.vehicle_code} already assigned.`);
         return;
     }
     
+    if (vehicle.status !== 'available') {
+        alert(`Vehicle ${vehicle.vehicle_code} is ${vehicle.status}. Cannot assign.`);
+        return;
+    }
+    
+    if (selectedDrivers.some(d => d.driver_id == driverId)) {
+        alert(`Driver ${driver.full_name || driver.username} is already assigned.`);
+        return;
+    }
+    
+    selectedVehicles.push({
+        vehicle_id: vehicle.vehicle_id,
+        vehicle_code: vehicle.vehicle_code,
+        vehicle_type: vehicle.vehicle_type,
+        plate_number: vehicle.plate_number,
+        driver_id: driverId,
+        driver_name: driver.full_name || driver.username
+    });
+    
+    selectedDrivers.push({
+        driver_id: driverId,
+        driver_name: driver.full_name || driver.username,
+        vehicle_id: vehicle.vehicle_id,
+        vehicle_code: vehicle.vehicle_code
+    });
+    
+    updateSelectedPairsList();
+    vehicleSelect.value = '';
+    driverSelect.value = '';
+};
+
+function updateSelectedPairsList() {
+    const container = document.getElementById('selectedPairsList');
+    if (!container) return;
+    
+    if (selectedVehicles.length === 0) {
+        container.innerHTML = '<div style="color: #666; text-align: center;">No vehicle-driver pairs added yet</div>';
+        return;
+    }
+    
+    container.innerHTML = selectedVehicles.map(pair => `
+        <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px; margin-bottom: 8px; background: white; border-radius: 8px; border: 1px solid #e0e0e0;">
+            <div style="flex: 1;">
+                <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
+                    <div>
+                        <strong>🚗 ${pair.vehicle_code}</strong><br>
+                        <small>${pair.vehicle_type} | ${pair.plate_number || 'No plate'}</small>
+                    </div>
+                    <div>
+                        <i class="fas fa-arrow-right"></i>
+                    </div>
+                    <div>
+                        <strong>👤 ${pair.driver_name}</strong><br>
+                        <small>Driver</small>
+                    </div>
+                </div>
+            </div>
+            <button class="btn-danger btn-sm" onclick="removeVehicleDriverPair(${pair.vehicle_id}, ${pair.driver_id})">Remove</button>
+        </div>
+    `).join('');
+}
+
+window.removeVehicleDriverPair = function(vehicleId, driverId) {
+    selectedVehicles = selectedVehicles.filter(v => v.vehicle_id != vehicleId);
+    selectedDrivers = selectedDrivers.filter(d => d.driver_id != driverId);
+    updateSelectedPairsList();
+};
+
+window.updateDemandLevel = function() {
+    const deliveryCount = parseInt(document.getElementById('deliveryCount')?.value) || 0;
+    const zoneId = document.getElementById('dispatchZoneId')?.value;
+    const demandDisplay = document.getElementById('demandLevelDisplay');
+    
+    if (!demandDisplay) return;
+    
+    const zone = zonesList.find(z => z.zone_id === zoneId);
+    if (!zone) {
+        demandDisplay.value = 'Select zone first';
+        demandDisplay.style.color = '#666';
+        return;
+    }
+    
+    let demandLevel = '';
+    let color = '';
+    
+    if (deliveryCount <= zone.threshold_normal) {
+        demandLevel = 'Normal Demand';
+        color = '#16a34a';
+    } else if (deliveryCount <= zone.threshold_high) {
+        demandLevel = 'High Demand';
+        color = '#ea580c';
+    } else {
+        demandLevel = 'Peak Risk';
+        color = '#dc2626';
+    }
+    
+    demandDisplay.value = demandLevel;
+    demandDisplay.style.color = color;
+    demandDisplay.style.fontWeight = 'bold';
+};
+
+window.saveDispatch = async function() {
+    const zoneId = document.getElementById('dispatchZoneId').value;
+    const datetime = document.getElementById('dispatchDateTime').value;
+    const deliveryCount = document.getElementById('deliveryCount').value;
+    const notes = document.getElementById('dispatchNotes').value;
+    
+    if (!zoneId) { alert('Please select a zone'); return; }
+    if (!datetime) { alert('Please select date and time'); return; }
+    if (!deliveryCount) { alert('Please enter number of deliveries'); return; }
+    if (selectedVehicles.length === 0) { alert('Please add at least one vehicle-driver pair'); return; }
+    
+    const zone = zonesList.find(z => z.zone_id === zoneId);
+    let demandLevel = '';
+    if (deliveryCount <= zone.threshold_normal) {
+        demandLevel = 'Normal Demand';
+    } else if (deliveryCount <= zone.threshold_high) {
+        demandLevel = 'High Demand';
+    } else {
+        demandLevel = 'Peak Risk';
+    }
+    
+    const assignedVehiclesStr = selectedVehicles.map(v => `${v.vehicle_code} (${v.vehicle_type})`).join(', ');
+    const assignedDriversStr = selectedDrivers.map(d => d.driver_name).join(', ');
+    
+    const data = {
+        zone_id: zoneId,
+        dispatch_datetime: datetime.replace('T', ' ') + ':00',
+        predicted_deliveries: parseInt(deliveryCount),
+        actual_deliveries: null,
+        demand_level: demandLevel,
+        assigned_vehicles: assignedVehiclesStr,
+        assigned_drivers: assignedDriversStr,
+        dispatch_status: 'planned',
+        notes: notes,
+        created_by: 1
+    };
+    
     showLoading();
+    
     try {
-        const response = await fetch(`${API_BASE_URL}/dispatch/assignments/${id}/enroute`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' }
+        const response = await fetch(`${API_BASE_URL}/dispatch/assignments`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify(data)
         });
-        const data = await response.json();
         
-        if (data.success) {
-            alert('✅ Dispatch is now ENROUTE!\nVehicles and drivers have been assigned.');
-            refreshDispatchTable();
-            if (currentPage === 'dashboard') loadDashboard();
+        const result = await response.json();
+        
+        if (result.success) {
+            const shiftDate = datetime.split('T')[0];
+            const shiftTime = datetime.split('T')[1];
+            const endTime = new Date(new Date(datetime).getTime() + 8*60*60*1000).toISOString().slice(11, 16);
+            
+            for (const pair of selectedVehicles) {
+                await fetch(`${API_BASE_URL}/vehicles/${pair.vehicle_id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ 
+                        status: 'assigned', 
+                        driver_id: pair.driver_id,
+                        assigned_zone: zoneId
+                    })
+                });
+                
+                await fetch(`${API_BASE_URL}/driver/assignments`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({
+                        driver_id: parseInt(pair.driver_id),
+                        vehicle_id: pair.vehicle_id,
+                        shift_date: shiftDate,
+                        shift_start: shiftTime,
+                        shift_end: endTime,
+                        zone_id: zoneId,
+                        status: 'scheduled'
+                    })
+                });
+            }
+            
+            alert(`Dispatch assignment created successfully!\nAssigned: ${selectedVehicles.length} vehicle(s) with ${selectedDrivers.length} driver(s)`);
+            closeModal();
+            refreshCurrentPage();
         } else {
-            alert('Error: ' + data.error);
+            alert('Error: ' + (result.error || 'Failed to create dispatch'));
         }
     } catch (error) {
-        console.error('Error:', error);
-        alert('Error starting dispatch');
+        console.error('Error creating dispatch:', error);
+        alert('Error creating dispatch assignment');
     } finally {
         hideLoading();
     }
 };
 
+window.editDispatch = async function(id) {
+    const response = await fetch(`${API_BASE_URL}/dispatch/assignments`);
+    const data = await response.json();
+    const assignment = data.assignments.find(a => a.assignment_id === id);
+    
+    if (!assignment) return;
+    
+    await fetchVehiclesAndDrivers();
+    
+    selectedVehicles = [];
+    selectedDrivers = [];
+    
+    if (assignment.assigned_vehicles && assignment.assigned_drivers) {
+        const vehiclePairs = assignment.assigned_vehicles.split(',');
+        const driverNames = assignment.assigned_drivers.split(',');
+        
+        for (let i = 0; i < vehiclePairs.length; i++) {
+            const vehicleCode = vehiclePairs[i].trim().split(' ')[0];
+            const vehicle = availableVehicles.find(v => v.vehicle_code === vehicleCode);
+            const driver = availableDrivers.find(d => (d.full_name || d.username) === driverNames[i]?.trim());
+            
+            if (vehicle && driver) {
+                selectedVehicles.push({
+                    vehicle_id: vehicle.vehicle_id,
+                    vehicle_code: vehicle.vehicle_code,
+                    vehicle_type: vehicle.vehicle_type,
+                    plate_number: vehicle.plate_number,
+                    driver_id: driver.user_id,
+                    driver_name: driver.full_name || driver.username
+                });
+                
+                selectedDrivers.push({
+                    driver_id: driver.user_id,
+                    driver_name: driver.full_name || driver.username,
+                    vehicle_id: vehicle.vehicle_id,
+                    vehicle_code: vehicle.vehicle_code
+                });
+            }
+        }
+    }
+    
+    showModal('Edit Dispatch Assignment', `
+        <div class="form-group">
+            <label>Zone ID</label>
+            <select id="dispatchZoneId" class="form-control" onchange="updateDemandLevel()">
+                ${(zonesList || []).map(zone => `
+                    <option value="${zone.zone_id}" ${assignment.zone_id === zone.zone_id ? 'selected' : ''}>${zone.zone_id} - ${zone.zone_name}</option>
+                `).join('')}
+            </select>
+        </div>
+        
+        <div class="form-group">
+            <label>Date & Time</label>
+            <input type="datetime-local" id="dispatchDateTime" class="form-control" value="${assignment.dispatch_datetime ? assignment.dispatch_datetime.slice(0, 16) : ''}">
+        </div>
+        
+        <div class="form-group">
+            <label>Number of Deliveries</label>
+            <input type="number" id="deliveryCount" class="form-control" value="${assignment.predicted_deliveries || ''}" onchange="updateDemandLevel()">
+        </div>
+        
+        <div class="form-group">
+            <label>Demand Level (Auto-calculated)</label>
+            <input type="text" id="demandLevelDisplay" class="form-control" readonly style="background: #f0f2f5;">
+        </div>
+        
+        <div class="form-group">
+            <label>Status</label>
+            <select id="dispatchStatus" class="form-control">
+                <option value="planned" ${assignment.dispatch_status === 'planned' ? 'selected' : ''}>Planned</option>
+                <option value="assigned" ${assignment.dispatch_status === 'assigned' ? 'selected' : ''}>Assigned</option>
+                <option value="enroute" ${assignment.dispatch_status === 'enroute' ? 'selected' : ''}>En Route</option>
+                <option value="completed" ${assignment.dispatch_status === 'completed' ? 'selected' : ''}>Completed</option>
+                <option value="cancelled" ${assignment.dispatch_status === 'cancelled' ? 'selected' : ''}>Cancelled</option>
+            </select>
+        </div>
+        
+        <div class="form-group">
+            <label>Vehicles & Drivers Assignment</label>
+            <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 10px;">
+                <div style="display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap;">
+                    <select id="vehicleSelect" class="form-control" style="flex: 1; min-width: 150px;">
+                        <option value="">Select a vehicle...</option>
+                        ${availableVehicles.filter(v => v.status === 'available' || selectedVehicles.some(sv => sv.vehicle_id === v.vehicle_id)).map(vehicle => `
+                            <option value="${vehicle.vehicle_id}">${vehicle.vehicle_code} - ${vehicle.vehicle_type} (${vehicle.status})</option>
+                        `).join('')}
+                    </select>
+                    <select id="driverSelect" class="form-control" style="flex: 1; min-width: 150px;">
+                        <option value="">Select a driver...</option>
+                        ${availableDrivers.map(driver => `
+                            <option value="${driver.user_id}">${driver.full_name || driver.username} (${driver.role})</option>
+                        `).join('')}
+                    </select>
+                    <button type="button" class="btn-primary" onclick="addVehicleDriverPair()">+ Add Pair</button>
+                </div>
+                <small class="form-text text-muted">Add vehicle-driver pairs. Each pair represents one vehicle with its assigned driver.</small>
+            </div>
+            <div id="selectedPairsList" style="margin-top: 10px; max-height: 200px; overflow-y: auto; border: 1px solid #ddd; border-radius: 8px; padding: 10px; background: #f8f9fa;"></div>
+        </div>
+        
+        <div class="form-group">
+            <label>Notes</label>
+            <textarea id="dispatchNotes" class="form-control" rows="3">${assignment.notes || ''}</textarea>
+        </div>
+        
+        <div class="form-actions">
+            <button onclick="closeModal()" class="btn-secondary">Cancel</button>
+            <button onclick="updateDispatch(${assignment.assignment_id})" class="btn-primary">Update</button>
+        </div>
+    `);
+    
+    updateSelectedPairsList();
+    updateDemandLevel();
+};
+
+window.updateDispatch = async function(id) {
+    const zoneId = document.getElementById('dispatchZoneId').value;
+    const datetime = document.getElementById('dispatchDateTime').value;
+    const deliveryCount = document.getElementById('deliveryCount').value;
+    const status = document.getElementById('dispatchStatus').value;
+    const notes = document.getElementById('dispatchNotes').value;
+    
+    const zone = zonesList.find(z => z.zone_id === zoneId);
+    let demandLevel = '';
+    if (deliveryCount <= zone.threshold_normal) {
+        demandLevel = 'Normal Demand';
+    } else if (deliveryCount <= zone.threshold_high) {
+        demandLevel = 'High Demand';
+    } else {
+        demandLevel = 'Peak Risk';
+    }
+    
+    const assignedVehiclesStr = selectedVehicles.map(v => `${v.vehicle_code} (${v.vehicle_type})`).join(', ');
+    const assignedDriversStr = selectedDrivers.map(d => d.driver_name).join(', ');
+    
+    const data = {
+        zone_id: zoneId,
+        dispatch_datetime: datetime.replace('T', ' ') + ':00',
+        predicted_deliveries: parseInt(deliveryCount),
+        demand_level: demandLevel,
+        assigned_vehicles: assignedVehiclesStr,
+        assigned_drivers: assignedDriversStr,
+        dispatch_status: status,
+        notes: notes
+    };
+    
+    if (status === 'completed') {
+        data.completed_at = new Date().toISOString().slice(0, 19).replace('T', ' ');
+    }
+    
+    try {
+        const response = await fetch(`${API_BASE_URL}/dispatch/assignments/${id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify(data)
+        });
+        const result = await response.json();
+        if (result.success) {
+            alert('Dispatch assignment updated successfully!');
+            closeModal();
+            refreshCurrentPage();
+        } else {
+            alert('Error: ' + result.error);
+        }
+    } catch (error) {
+        alert('Error updating dispatch');
+    }
+};
+
+window.deleteDispatch = async function(id) {
+    if (confirm('Are you sure you want to delete this dispatch assignment?')) {
+        try {
+            const response = await fetch(`${API_BASE_URL}/dispatch/assignments/${id}`, { method: 'DELETE' });
+            const data = await response.json();
+            if (data.success) refreshDispatchTable();
+            else alert('Error deleting assignment');
+        } catch (error) {
+            alert('Error deleting assignment');
+        }
+    }
+};
 
 // ============ LOADING FUNCTIONS ============
 function showLoading() {

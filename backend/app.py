@@ -876,7 +876,7 @@ def add_user():
             email,
             full_name,
             role,  # ← NOW USING ROLE FROM REQUEST
-            zone_access if role == 'driver' else None,  # Only set zone_access for drivers
+            zone_access,  # Only set zone_access for drivers
             is_active
         ))
         
@@ -1021,6 +1021,7 @@ def create_dispatch_assignment():
     cursor = conn.cursor()
     
     try:
+        # Insert dispatch assignment
         cursor.execute("""
             INSERT INTO dispatch_assignments 
             (zone_id, dispatch_datetime, predicted_deliveries, actual_deliveries, 
@@ -1033,8 +1034,26 @@ def create_dispatch_assignment():
               data.get('dispatch_status', 'planned'), data.get('notes'), 
               data.get('created_by', session.get('user_id', 1))))
         
-        conn.commit()
         assignment_id = cursor.lastrowid
+        
+        # ========== NEW: Update vehicle statuses to 'assigned' ==========
+        assigned_vehicles = data.get('assigned_vehicles', '')
+        if assigned_vehicles:
+            import re
+            # Extract vehicle codes like MC-001, VN-001, etc.
+            vehicle_codes = re.findall(r'([A-Z]+-[0-9]+)', assigned_vehicles)
+            
+            for vehicle_code in vehicle_codes:
+                cursor.execute("""
+                    UPDATE vehicles 
+                    SET status = 'assigned', 
+                        updated_at = NOW()
+                    WHERE vehicle_code = %s AND status = 'available'
+                """, (vehicle_code,))
+                print(f"   ✅ Vehicle {vehicle_code} marked as assigned")
+        # ================================================================
+        
+        conn.commit()
         cursor.close()
         conn.close()
         
@@ -1043,6 +1062,201 @@ def create_dispatch_assignment():
         cursor.close()
         conn.close()
         return jsonify({'success': False, 'error': str(e)})
+
+# ============ RISK ACKNOWLEDGMENT API ============
+@app.route('/api/acknowledge-risk', methods=['POST'])
+@login_required
+def acknowledge_risk():
+    """Acknowledge a risk so it won't show on dashboard"""
+    data = request.json
+    zone_id = data.get('zone_id')
+    risk_datetime = data.get('datetime')
+    
+    if not zone_id or not risk_datetime:
+        return jsonify({'success': False, 'error': 'Missing zone_id or datetime'})
+    
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO acknowledged_risks (user_id, zone_id, risk_datetime)
+            VALUES (%s, %s, %s)
+        """, (session['user_id'], zone_id, risk_datetime))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return jsonify({'success': True, 'message': 'Risk acknowledged'})
+    except Exception as e:
+        conn.rollback()
+        cursor.close()
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/get-acknowledged-risks', methods=['GET'])
+@login_required
+def get_acknowledged_risks():
+    """Get list of acknowledged risks for current user"""
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT zone_id, DATE_FORMAT(risk_datetime, '%Y-%m-%d %H:%i:%s') as risk_datetime
+        FROM acknowledged_risks 
+        WHERE user_id = %s
+    """, (session['user_id'],))
+    risks = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    
+    acknowledged = [f"{r[0]}|{r[1]}" for r in risks]
+    return jsonify({'success': True, 'acknowledged_risks': acknowledged})
+
+# ============ ADJUSTED FORECAST (+2 RISK BUTTON) ============
+@app.route('/api/predict-adjusted', methods=['POST'])
+@login_required
+def predict_adjusted():
+    """Get prediction with +2 delivery adjustment (for +2 Risk button)"""
+    if not models_loaded:
+        return jsonify({'success': False, 'error': 'Models not loaded'})
+    
+    data = request.json
+    zone_id = data.get('zone_id')
+    datetime_str = data.get('datetime')
+    adjustment = data.get('adjustment', 2)  # Default +2
+    
+    if not zone_id or not datetime_str:
+        return jsonify({'success': False, 'error': 'Missing zone_id or datetime'})
+    
+    pred_datetime = datetime.strptime(datetime_str, '%Y-%m-%d %H:%M:%S')
+    hour = pred_datetime.hour
+    
+    # Business hours check
+    if hour < 6 or hour > 22:
+        return jsonify({
+            'success': True,
+            'prediction': {
+                'zone_id': zone_id,
+                'datetime': datetime_str,
+                'predicted_deliveries': 0,
+                'demand_level': 'No Operations',
+                'recommendation': 'No deliveries scheduled during this time.',
+                'vehicle_breakdown': {'motorcycles': 0, 'vans': 0, 'trucks': 0},
+                'confidence_interval': [0, 0],
+                'adjusted': False
+            }
+        })
+    
+    # Get zone config
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({'success': False, 'error': 'Database connection failed'})
+    
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM zones WHERE zone_id = %s", (zone_id,))
+    zone_config = cursor.fetchone()
+    
+    # Get recent data for lags
+    cursor.execute("""
+        SELECT delivery_count, delivery_timestamp 
+        FROM delivery_records 
+        WHERE zone_id = %s AND delivery_timestamp < %s 
+        ORDER BY delivery_timestamp DESC LIMIT 25
+    """, (zone_id, datetime_str))
+    recent = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    
+    if not zone_config:
+        return jsonify({'success': False, 'error': 'Zone not found'})
+    
+    # Build feature vector
+    features = {}
+    features['hour'] = pred_datetime.hour
+    features['hour_sin'] = np.sin(2 * np.pi * pred_datetime.hour / 24)
+    features['hour_cos'] = np.cos(2 * np.pi * pred_datetime.hour / 24)
+    features['day_of_week'] = pred_datetime.weekday()
+    features['dow_sin'] = np.sin(2 * np.pi * pred_datetime.weekday() / 7)
+    features['dow_cos'] = np.cos(2 * np.pi * pred_datetime.weekday() / 7)
+    features['month'] = pred_datetime.month
+    features['is_weekend'] = 1 if pred_datetime.weekday() >= 5 else 0
+    features['is_morning_rush'] = 1 if 7 <= pred_datetime.hour <= 9 else 0
+    features['is_evening_rush'] = 1 if 17 <= pred_datetime.hour <= 19 else 0
+    features['is_lunch_hour'] = 1 if 12 <= pred_datetime.hour <= 13 else 0
+    features['is_business_hour'] = 1 if 6 <= pred_datetime.hour <= 22 else 0
+    
+    recent_counts = [r['delivery_count'] for r in recent]
+    for lag in [1, 2, 3, 6, 12, 24]:
+        features[f'lag_{lag}h'] = recent_counts[lag-1] if len(recent_counts) >= lag else 0
+    
+    for window in [3, 6, 12, 24]:
+        if len(recent_counts) >= window:
+            window_data = recent_counts[:window]
+            features[f'rolling_mean_{window}h'] = float(np.mean(window_data))
+            features[f'rolling_std_{window}h'] = float(np.std(window_data))
+        else:
+            features[f'rolling_mean_{window}h'] = 0
+            features[f'rolling_std_{window}h'] = 0
+    
+    # Predict
+    try:
+        feature_values = [features.get(col, 0) for col in feature_columns]
+        X = np.array([feature_values])
+        X_scaled = scaler.transform(X)
+        pred_count = reg_model.predict(X_scaled)[0]
+        pred_count = max(0, int(round(pred_count)))
+        
+        # Apply adjustment (+2 as requested)
+        adjusted_count = max(0, pred_count + adjustment)
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'Prediction error: {str(e)}'})
+    
+    # Recalculate demand level with adjusted count
+    if adjusted_count <= zone_config['threshold_normal']:
+        demand_level = "Normal Demand (+2 Risk)"
+    elif adjusted_count <= zone_config['threshold_high']:
+        demand_level = "High Demand (+2 Risk)"
+    else:
+        demand_level = "Peak Risk (+2 Risk)"
+    
+    # Vehicle recommendation based on adjusted count
+    base = zone_config['base_vehicles']
+    if adjusted_count <= 10:
+        motorcycles, vans, trucks = base, 0, 0
+        recommendation = f"Normal operations: {motorcycles} motorcycles"
+    elif adjusted_count <= 20:
+        motorcycles, vans, trucks = base, 1, 0
+        recommendation = f"Increase capacity: {motorcycles} motorcycles + {vans} van"
+    elif adjusted_count <= 35:
+        motorcycles, vans, trucks = base, 2, 0
+        recommendation = f"High demand period: {motorcycles} motorcycles + {vans} vans"
+    else:
+        motorcycles, vans, trucks = base, 3, 1
+        recommendation = f"PEAK ALERT: {motorcycles} motorcycles + {vans} vans + {trucks} truck"
+    
+    return jsonify({
+        'success': True,
+        'prediction': {
+            'zone_id': zone_id,
+            'datetime': datetime_str,
+            'predicted_deliveries': adjusted_count,
+            'original_prediction': pred_count,
+            'adjustment_applied': adjustment,
+            'demand_level': demand_level,
+            'recommendation': recommendation,
+            'vehicle_breakdown': {
+                'motorcycles': motorcycles,
+                'vans': vans,
+                'trucks': trucks
+            },
+            'confidence_interval': [max(0, adjusted_count - 5), adjusted_count + 5],
+            'adjusted': True
+        }
+    })
 
 @app.route('/api/dispatch/assignments/<int:assignment_id>', methods=['PUT'])
 @login_required
@@ -1227,6 +1441,12 @@ def complete_dispatch_with_delivery(assignment_id):
         if not distance_km:
             distance_km = round(2 + (delivery_count * 0.3), 2)
         
+        # FIX: Use current time if dispatch_datetime is invalid or NULL
+        delivery_timestamp = dispatch['dispatch_datetime']
+        if delivery_timestamp is None or delivery_timestamp.year < 2024:
+            delivery_timestamp = datetime.now()
+            print(f"⚠️ Fixed invalid timestamp from {dispatch['dispatch_datetime']} to {delivery_timestamp}")
+        
         # Update dispatch to completed
         regular_cursor.execute("""
             UPDATE dispatch_assignments 
@@ -1236,16 +1456,16 @@ def complete_dispatch_with_delivery(assignment_id):
             WHERE assignment_id = %s
         """, (delivery_count, assignment_id))
         
-        # Insert into delivery_records
+        # Insert into delivery_records with fixed timestamp
         regular_cursor.execute("""
             INSERT INTO delivery_records 
             (zone_id, delivery_timestamp, delivery_count, vehicle_type, distance_km)
             VALUES (%s, %s, %s, %s, %s)
-        """, (dispatch['zone_id'], dispatch['dispatch_datetime'], delivery_count, vehicle_type, distance_km))
+        """, (dispatch['zone_id'], delivery_timestamp, delivery_count, vehicle_type, distance_km))
         
         record_id = regular_cursor.lastrowid
         
-        # FREE UP VEHICLES (only if they were assigned/enroute)
+        # FREE UP VEHICLES
         if dispatch['assigned_vehicles']:
             import re
             vehicle_codes = re.findall(r'([A-Z]+-[0-9]+)', dispatch['assigned_vehicles'])
@@ -1291,6 +1511,7 @@ def complete_dispatch_with_delivery(assignment_id):
         
     except Exception as e:
         conn.rollback()
+        print(f"❌ Error in complete_dispatch_with_delivery: {e}")
         return jsonify({'success': False, 'error': str(e)})
     finally:
         conn.close()

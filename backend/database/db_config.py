@@ -6,9 +6,9 @@ class DatabaseConfig:
         self.config = {
             'host': 'localhost',
             'user': 'root',
-            'password': 'root',
-            'database': 'omniroute_dm2',  # ← FIXED: changed from 'omniroute_db'
-            'port': 3306
+            'password': '',
+            'database': 'omniroute_dm',  # ← FIXED: changed from 'omniroute_db'
+            'port': 3307
         }
     
     def get_connection(self):
