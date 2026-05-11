@@ -801,33 +801,102 @@ def get_users():
 @app.route('/api/users', methods=['POST'])
 @login_required
 def add_user():
+    """Create a new user - HARDCODED ROLE = 'driver'"""
     data = request.json
+    
+    if not data:
+        return jsonify({'success': False, 'error': 'No data provided'})
+    
+    # Get data from request
+    username = data.get('username', '').strip()
+    password = data.get('password', '')
+    email = data.get('email', '').strip().lower()
+    full_name = data.get('full_name', '').strip() if data.get('full_name') else None
+    zone_access = data.get('zone_access', '').strip() if data.get('zone_access') else 'ZONE_A,ZONE_B,ZONE_C,ZONE_D,ZONE_E'
+    is_active = data.get('is_active', 1)
+    
+    # ========== HARDCODE ROLE ==========
+    role = 'driver'  # ← EVERY USER BECOMES A DRIVER
+    # ==================================
+    
+    # ========== DEBUG PRINT ==========
+    print("\n" + "=" * 60)
+    print("📝 ADD USER - HARDCODED MODE")
+    print("=" * 60)
+    print(f"   Username: {username}")
+    print(f"   Email: {email}")
+    print(f"   Role (HARDCODED): '{role}'")
+    print(f"   Zone Access: {zone_access}")
+    print("=" * 60 + "\n")
+    # ==================================
+    
+    # Validation
+    if not username:
+        return jsonify({'success': False, 'error': 'Username is required'})
+    if not password:
+        return jsonify({'success': False, 'error': 'Password is required'})
+    if len(password) < 4:
+        return jsonify({'success': False, 'error': 'Password must be at least 4 characters'})
+    if not email:
+        return jsonify({'success': False, 'error': 'Email is required'})
+    
     conn = get_db_connection()
     if conn is None:
         return jsonify({'success': False, 'error': 'Database connection failed'})
     
     cursor = conn.cursor()
     
+    # Check if username exists
+    cursor.execute("SELECT user_id FROM users WHERE username = %s", (username,))
+    if cursor.fetchone():
+        cursor.close()
+        conn.close()
+        return jsonify({'success': False, 'error': f'Username "{username}" already exists'})
+    
+    # Check if email exists
+    cursor.execute("SELECT user_id FROM users WHERE email = %s", (email,))
+    if cursor.fetchone():
+        cursor.close()
+        conn.close()
+        return jsonify({'success': False, 'error': f'Email "{email}" already exists'})
+    
     # Hash password
-    password_hash = bcrypt.hashpw(data['password'].encode('utf-8'), bcrypt.gensalt())
+    password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
     
     try:
         cursor.execute("""
             INSERT INTO users (username, password_hash, email, full_name, role, zone_access, is_active)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """, (data['username'], password_hash, data['email'], data.get('full_name'),
-              data.get('role', 'dispatcher'), data.get('zone_access'), data.get('is_active', 1)))
+        """, (
+            username,
+            password_hash,
+            email,
+            full_name,
+            role,  # ← HARDCODED 'driver'
+            zone_access,
+            is_active
+        ))
         
         conn.commit()
         user_id = cursor.lastrowid
         cursor.close()
         conn.close()
         
-        return jsonify({'success': True, 'user_id': user_id})
+        print(f"✅ USER CREATED: {username} with ROLE: {role}")
+        
+        return jsonify({
+            'success': True,
+            'user_id': user_id,
+            'role': role,
+            'message': f'User {username} created with role: {role}'
+        })
+        
     except Exception as e:
+        print(f"❌ Error: {e}")
         cursor.close()
         conn.close()
         return jsonify({'success': False, 'error': str(e)})
+    
 
 @app.route('/api/users/<int:user_id>', methods=['PUT'])
 @login_required

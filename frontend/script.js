@@ -907,6 +907,66 @@ window.completeDispatchWithDelivery = async function(id, zoneId, datetime, predi
         </div>
     `);
 };
+window.saveUser = async function() {
+    console.log("🔵 SAVE USER CALLED");
+    
+    // Wait a bit to ensure modal content is fully rendered
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // Try to find the dropdown
+    let roleSelect = document.getElementById('userRole');
+    
+    if (!roleSelect) {
+        console.error("❌ userRole element not found!");
+        alert("Form not ready. Please close and try again.");
+        return;
+    }
+    
+    const role = roleSelect.value;
+    const password = document.getElementById('userPassword')?.value;
+    
+    console.log("Role value:", role);
+    console.log("Role type:", typeof role);
+    
+    if (!password) { alert('Password is required'); return; }
+    
+    const data = {
+        username: document.getElementById('userUsername')?.value || '',
+        password: password,
+        full_name: document.getElementById('userFullName')?.value || '',
+        email: document.getElementById('userEmail')?.value || '',
+        role: role,
+        zone_access: role === 'driver' ? document.getElementById('userZoneAccess')?.value : null,
+        is_active: parseInt(document.getElementById('userStatus')?.value || '1')
+    };
+    
+    console.log("Sending:", data);
+    
+    if (!data.username || !data.email) { alert('Username and email are required'); return; }
+    
+    showLoading();
+    
+    try {
+        const response = await fetch(`${API_BASE_URL}/users`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        const result = await response.json();
+        if (result.success) {
+            alert(`✅ User "${data.username}" created with role: ${result.role || role}`);
+            closeModal();
+            refreshUsersTable();
+        } else {
+            alert('Error: ' + result.error);
+        }
+    } catch (error) {
+        alert('Error saving user');
+    } finally {
+        hideLoading();
+    }
+};
+
 
 window.saveCompletedDelivery = async function(id) {
     const actualDeliveries = document.getElementById('actualDeliveries').value;
@@ -946,6 +1006,63 @@ window.saveCompletedDelivery = async function(id) {
         hideLoading();
     }
 };
+function showNewUserModal() {
+    showModal('Add New User', `
+        <div class="form-group">
+            <label>Username *</label>
+            <input type="text" id="userUsername" class="form-control" placeholder="e.g., johndoe">
+        </div>
+        <div class="form-group">
+            <label>Password *</label>
+            <input type="password" id="userPassword" class="form-control" placeholder="••••••••">
+        </div>
+        <div class="form-group">
+            <label>Full Name</label>
+            <input type="text" id="userFullName" class="form-control" placeholder="John Doe">
+        </div>
+        <div class="form-group">
+            <label>Email *</label>
+            <input type="email" id="userEmail" class="form-control" placeholder="john@example.com">
+        </div>
+        <div class="form-group">
+            <label>Role</label>
+            <select id="userRole" class="form-control">
+                <option value="dispatcher">Dispatcher</option>
+                <option value="admin">Admin</option>
+                <option value="manager">Manager</option>
+                <option value="driver">Driver</option>
+            </select>
+        </div>
+        <div class="form-group driver-zone" style="display:none;">
+            <label>Zone Access (comma-separated)</label>
+            <input type="text" id="userZoneAccess" class="form-control" placeholder="ZONE_A,ZONE_B">
+            <small class="form-text text-muted">Only for drivers</small>
+        </div>
+        <div class="form-group">
+            <label>Status</label>
+            <select id="userStatus" class="form-control">
+                <option value="1">Active</option>
+                <option value="0">Inactive</option>
+            </select>
+        </div>
+        <div class="form-actions">
+            <button onclick="closeModal()" class="btn-secondary">Cancel</button>
+            <button onclick="saveUser()" class="btn-primary">Create User</button>
+        </div>
+    `);
+    
+    // Add event listener to show/hide zone access for drivers
+    setTimeout(() => {
+        const roleSelect = document.getElementById('userRole');
+        const zoneDiv = document.querySelector('.driver-zone');
+        
+        if (roleSelect && zoneDiv) {
+            roleSelect.addEventListener('change', function() {
+                zoneDiv.style.display = this.value === 'driver' ? 'block' : 'none';
+            });
+        }
+    }, 50);
+}
 
 async function retrainModel() {
     showLoading();
@@ -1945,73 +2062,74 @@ function escapeHtml(text) {
     div.textContent = text;
     return div.innerHTML;
 }
-
-function showNewUserModal() {
-    showModal('Add New User', `
-        <div class="form-group"><label>Username *</label><input type="text" id="userUsername" placeholder="e.g., johndoe"></div>
-        <div class="form-group"><label>Password *</label><input type="password" id="userPassword" placeholder="••••••••"></div>
-        <div class="form-group"><label>Full Name</label><input type="text" id="userFullName" placeholder="John Doe"></div>
-        <div class="form-group"><label>Email *</label><input type="email" id="userEmail" placeholder="john@example.com"></div>
-        <div class="form-group"><label>Role</label><select id="userRole"><option value="dispatcher">Dispatcher</option><option value="admin">Admin</option><option value="manager">Manager</option><option value="driver">Driver</option></select></div>
-        <div class="form-group driver-zone" style="display:none;"><label>Zone Access (comma-separated)</label><input type="text" id="userZoneAccess" placeholder="ZONE_A,ZONE_B"><small style="color:#666;">Only for drivers</small></div>
-        <div class="form-group"><label>Status</label><select id="userStatus"><option value="1">Active</option><option value="0">Inactive</option></select></div>
-        <div class="form-actions"><button onclick="closeModal()" class="btn-secondary">Cancel</button><button onclick="saveUser()" class="btn-primary">Save</button></div>
-    `);
-    
-    document.getElementById('userRole').addEventListener('change', (e) => {
-        const zoneDiv = document.querySelector('.driver-zone');
-        if (zoneDiv) zoneDiv.style.display = e.target.value === 'driver' ? 'block' : 'none';
-    });
-}
-
 window.saveUser = async function() {
-    const password = document.getElementById('userPassword').value;
-    if (!password) { alert('Password is required'); return; }
+    console.log("🔵 SAVE USER CALLED - HARDCODED MODE");
     
-    const role = document.getElementById('userRole').value;
+    // Wait to ensure modal content is fully rendered
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // Get form values
+    const username = document.getElementById('userUsername')?.value || '';
+    const password = document.getElementById('userPassword')?.value || '';
+    const fullName = document.getElementById('userFullName')?.value || '';
+    const email = document.getElementById('userEmail')?.value || '';
+    const zoneAccess = document.getElementById('userZoneAccess')?.value || '';
+    const isActive = parseInt(document.getElementById('userStatus')?.value || '1');
+    
+    // HARDCODE ROLE TO 'driver' - IGNORE DROPDOWN
+    const role = 'driver';
+    
+    console.log("📋 FORM VALUES:");
+    console.log("  Username:", username);
+    console.log("  Email:", email);
+    console.log("  HARDCODED ROLE:", role);
+    console.log("==================");
+    
+    // Validation
+    if (!username) { alert('Username is required'); return; }
+    if (!password) { alert('Password is required'); return; }
+    if (password.length < 4) { alert('Password must be at least 4 characters'); return; }
+    if (!email) { alert('Email is required'); return; }
+    
     const data = {
-        username: document.getElementById('userUsername').value,
+        username: username,
         password: password,
-        full_name: document.getElementById('userFullName').value,
-        email: document.getElementById('userEmail').value,
-        role: role,
-        zone_access: role === 'driver' ? document.getElementById('userZoneAccess').value : null,
-        is_active: parseInt(document.getElementById('userStatus').value)
+        full_name: fullName || null,
+        email: email,
+        role: role,  // ← HARDCODED 'driver'
+        zone_access: role === 'driver' ? zoneAccess : null,
+        is_active: isActive
     };
-    if (!data.username || !data.email) { alert('Username and email are required'); return; }
+    
+    console.log("📤 SENDING DATA:", JSON.stringify(data, null, 2));
+    
+    showLoading();
     
     try {
         const response = await fetch(`${API_BASE_URL}/users`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data)
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
         });
-        const result = await response.json();
-        if (result.success) { closeModal(); refreshUsersTable(); }
-        else alert('Error: ' + result.error);
-    } catch (error) { alert('Error saving user'); }
-};
-
-window.editUser = async function(id) {
-    const response = await fetch(`${API_BASE_URL}/users`);
-    const data = await response.json();
-    const user = data.users.find(u => u.user_id === id);
-    if (user) {
-        showModal('Edit User', `
-            <div class="form-group"><label>Username</label><input type="text" id="userUsername" value="${user.username}" readonly style="background:#f0f2f5"></div>
-            <div class="form-group"><label>New Password (leave blank to keep current)</label><input type="password" id="userPassword" placeholder="••••••••"></div>
-            <div class="form-group"><label>Full Name</label><input type="text" id="userFullName" value="${user.full_name || ''}"></div>
-            <div class="form-group"><label>Email</label><input type="email" id="userEmail" value="${user.email}"></div>
-            <div class="form-group"><label>Role</label><select id="userRole"><option ${user.role === 'dispatcher' ? 'selected' : ''}>dispatcher</option><option ${user.role === 'admin' ? 'selected' : ''}>admin</option><option ${user.role === 'manager' ? 'selected' : ''}>manager</option><option ${user.role === 'driver' ? 'selected' : ''}>driver</option></select></div>
-            <div class="form-group driver-zone" style="${user.role === 'driver' ? 'block' : 'none'}"><label>Zone Access</label><input type="text" id="userZoneAccess" value="${user.zone_access || ''}"></div>
-            <div class="form-group"><label>Status</label><select id="userStatus"><option value="1" ${user.is_active ? 'selected' : ''}>Active</option><option value="0" ${!user.is_active ? 'selected' : ''}>Inactive</option></select></div>
-            <div class="form-actions"><button onclick="closeModal()" class="btn-secondary">Cancel</button><button onclick="updateUser(${user.user_id})" class="btn-primary">Update</button></div>
-        `);
         
-        document.getElementById('userRole').addEventListener('change', (e) => {
-            const zoneDiv = document.querySelector('.driver-zone');
-            if (zoneDiv) zoneDiv.style.display = e.target.value === 'driver' ? 'block' : 'none';
-        });
+        const result = await response.json();
+        console.log("📥 BACKEND RESPONSE:", result);
+        
+        if (result.success) {
+            alert(`✅ User "${username}" created successfully!\nRole: ${result.role || role}`);
+            closeModal();
+            refreshUsersTable();
+        } else {
+            alert('Error: ' + (result.error || 'Failed to create user'));
+        }
+    } catch (error) {
+        console.error('❌ Error:', error);
+        alert('Error saving user: ' + error.message);
+    } finally {
+        hideLoading();
     }
 };
+
 
 window.updateUser = async function(id) {
     const role = document.getElementById('userRole').value;
