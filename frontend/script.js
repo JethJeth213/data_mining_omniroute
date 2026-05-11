@@ -3,6 +3,24 @@ const API_BASE_URL = 'http://127.0.0.1:5000/api';
 // Current page tracking
 let currentPage = 'dashboard';
 
+console.log("🔍 DEBUG: Intercepting fetch calls");
+const originalFetch = window.fetch;
+window.fetch = function(url, options) {
+    if (url.includes('/users') && options?.method === 'POST') {
+        console.log("🔍 FETCH INTERCEPTED:");
+        console.log("  URL:", url);
+        console.log("  Data being sent:", options.body);
+        try {
+            const data = JSON.parse(options.body);
+            console.log("  Parsed data:", data);
+            console.log("  Role being sent:", data.role);
+        } catch (e) {
+            console.log("  Could not parse JSON");
+        }
+    }
+    return originalFetch.apply(this, arguments);
+};
+
 // Pagination state
 let currentDispatchPage = 1;
 let currentVehiclePage = 1;
@@ -907,105 +925,7 @@ window.completeDispatchWithDelivery = async function(id, zoneId, datetime, predi
         </div>
     `);
 };
-window.saveUser = async function() {
-    console.log("🔵 SAVE USER CALLED");
-    
-    // Wait a bit to ensure modal content is fully rendered
-    await new Promise(resolve => setTimeout(resolve, 100));
-    
-    // Try to find the dropdown
-    let roleSelect = document.getElementById('userRole');
-    
-    if (!roleSelect) {
-        console.error("❌ userRole element not found!");
-        alert("Form not ready. Please close and try again.");
-        return;
-    }
-    
-    const role = roleSelect.value;
-    const password = document.getElementById('userPassword')?.value;
-    
-    console.log("Role value:", role);
-    console.log("Role type:", typeof role);
-    
-    if (!password) { alert('Password is required'); return; }
-    
-    const data = {
-        username: document.getElementById('userUsername')?.value || '',
-        password: password,
-        full_name: document.getElementById('userFullName')?.value || '',
-        email: document.getElementById('userEmail')?.value || '',
-        role: role,
-        zone_access: role === 'driver' ? document.getElementById('userZoneAccess')?.value : null,
-        is_active: parseInt(document.getElementById('userStatus')?.value || '1')
-    };
-    
-    console.log("Sending:", data);
-    
-    if (!data.username || !data.email) { alert('Username and email are required'); return; }
-    
-    showLoading();
-    
-    try {
-        const response = await fetch(`${API_BASE_URL}/users`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data)
-        });
-        const result = await response.json();
-        if (result.success) {
-            alert(`✅ User "${data.username}" created with role: ${result.role || role}`);
-            closeModal();
-            refreshUsersTable();
-        } else {
-            alert('Error: ' + result.error);
-        }
-    } catch (error) {
-        alert('Error saving user');
-    } finally {
-        hideLoading();
-    }
-};
 
-
-window.saveCompletedDelivery = async function(id) {
-    const actualDeliveries = document.getElementById('actualDeliveries').value;
-    const vehicleType = document.getElementById('vehicleType').value;
-    const distanceKm = document.getElementById('distanceKm').value;
-    
-    if (!actualDeliveries) {
-        alert('Please enter actual number of deliveries');
-        return;
-    }
-    
-    showLoading();
-    try {
-        const response = await fetch(`${API_BASE_URL}/dispatch/assignments/${id}/complete-with-delivery`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                actual_deliveries: parseInt(actualDeliveries),
-                vehicle_type: vehicleType,
-                distance_km: distanceKm ? parseFloat(distanceKm) : null
-            })
-        });
-        
-        const data = await response.json();
-        if (data.success) {
-            alert(`✅ Dispatch completed!\n📊 Delivery recorded (ID: ${data.delivery_record_id})\n🚗 Vehicles and drivers freed up!`);
-            closeModal();
-            refreshDispatchTable();
-            if (currentPage === 'dashboard') loadDashboard();
-        } else {
-            alert('Error: ' + data.error);
-        }
-    } catch (error) {
-        console.error('Error:', error);
-        alert('Error completing dispatch');
-    } finally {
-        hideLoading();
-    }
-};
 function showNewUserModal() {
     showModal('Add New User', `
         <div class="form-group">
@@ -1024,15 +944,26 @@ function showNewUserModal() {
             <label>Email *</label>
             <input type="email" id="userEmail" class="form-control" placeholder="john@example.com">
         </div>
+        
+        <!-- RADIO BUTTONS FOR ROLE -->
         <div class="form-group">
             <label>Role</label>
-            <select id="userRole" class="form-control">
-                <option value="dispatcher">Dispatcher</option>
-                <option value="admin">Admin</option>
-                <option value="manager">Manager</option>
-                <option value="driver">Driver</option>
-            </select>
+            <div style="display: flex; gap: 20px; flex-wrap: wrap; padding: 10px 0;">
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                    <input type="radio" name="userRole" value="dispatcher" checked> Dispatcher
+                </label>
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                    <input type="radio" name="userRole" value="admin"> Admin
+                </label>
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                    <input type="radio" name="userRole" value="manager"> Manager
+                </label>
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                    <input type="radio" name="userRole" value="driver"> Driver
+                </label>
+            </div>
         </div>
+        
         <div class="form-group driver-zone" style="display:none;">
             <label>Zone Access (comma-separated)</label>
             <input type="text" id="userZoneAccess" class="form-control" placeholder="ZONE_A,ZONE_B">
@@ -1053,12 +984,15 @@ function showNewUserModal() {
     
     // Add event listener to show/hide zone access for drivers
     setTimeout(() => {
-        const roleSelect = document.getElementById('userRole');
+        const radioButtons = document.querySelectorAll('input[name="userRole"]');
         const zoneDiv = document.querySelector('.driver-zone');
         
-        if (roleSelect && zoneDiv) {
-            roleSelect.addEventListener('change', function() {
-                zoneDiv.style.display = this.value === 'driver' ? 'block' : 'none';
+        if (radioButtons.length > 0 && zoneDiv) {
+            radioButtons.forEach(radio => {
+                radio.addEventListener('change', function() {
+                    zoneDiv.style.display = this.value === 'driver' ? 'block' : 'none';
+                    console.log("Role changed to:", this.value);
+                });
             });
         }
     }, 50);
@@ -2062,8 +1996,9 @@ function escapeHtml(text) {
     div.textContent = text;
     return div.innerHTML;
 }
+
 window.saveUser = async function() {
-    console.log("🔵 SAVE USER CALLED - HARDCODED MODE");
+    console.log("🔵 SAVE USER CALLED");
     
     // Wait to ensure modal content is fully rendered
     await new Promise(resolve => setTimeout(resolve, 100));
@@ -2076,13 +2011,20 @@ window.saveUser = async function() {
     const zoneAccess = document.getElementById('userZoneAccess')?.value || '';
     const isActive = parseInt(document.getElementById('userStatus')?.value || '1');
     
-    // HARDCODE ROLE TO 'driver' - IGNORE DROPDOWN
-    const role = 'driver';
+    // GET ROLE FROM RADIO BUTTONS
+    const selectedRole = document.querySelector('input[name="userRole"]:checked');
+    let role = 'dispatcher'; // default
+    if (selectedRole) {
+        role = selectedRole.value;
+        console.log("✅ Selected role from radio:", role);
+    } else {
+        console.warn("⚠️ No radio button selected, using default:", role);
+    }
     
     console.log("📋 FORM VALUES:");
     console.log("  Username:", username);
     console.log("  Email:", email);
-    console.log("  HARDCODED ROLE:", role);
+    console.log("  Selected Role:", role);
     console.log("==================");
     
     // Validation
@@ -2096,7 +2038,7 @@ window.saveUser = async function() {
         password: password,
         full_name: fullName || null,
         email: email,
-        role: role,  // ← HARDCODED 'driver'
+        role: role,
         zone_access: role === 'driver' ? zoneAccess : null,
         is_active: isActive
     };
@@ -2130,27 +2072,149 @@ window.saveUser = async function() {
     }
 };
 
+window.editUser = async function(id) {
+    // Fetch user data
+    const response = await fetch(`${API_BASE_URL}/users`);
+    const data = await response.json();
+    const user = data.users.find(u => u.user_id === id);
+    
+    if (!user) return;
+    
+    // Determine which role is selected
+    const roleOptions = ['dispatcher', 'admin', 'manager', 'driver'];
+    const roleLabels = {
+        'dispatcher': 'Dispatcher',
+        'admin': 'Admin',
+        'manager': 'Manager',
+        'driver': 'Driver'
+    };
+    
+    showModal('Edit User', `
+        <div class="form-group">
+            <label>Username</label>
+            <input type="text" id="userUsername" class="form-control" value="${escapeHtml(user.username)}" disabled style="background: #f0f2f5;">
+            <small class="form-text text-muted">Username cannot be changed</small>
+        </div>
+        <div class="form-group">
+            <label>Password (leave blank to keep current)</label>
+            <input type="password" id="userPassword" class="form-control" placeholder="••••••••">
+        </div>
+        <div class="form-group">
+            <label>Full Name</label>
+            <input type="text" id="userFullName" class="form-control" value="${escapeHtml(user.full_name || '')}">
+        </div>
+        <div class="form-group">
+            <label>Email *</label>
+            <input type="email" id="userEmail" class="form-control" value="${escapeHtml(user.email)}">
+        </div>
+        
+        <!-- RADIO BUTTONS FOR ROLE -->
+        <div class="form-group">
+            <label>Role</label>
+            <div style="display: flex; gap: 20px; flex-wrap: wrap; padding: 10px 0;">
+                ${roleOptions.map(role => `
+                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                        <input type="radio" name="userRole" value="${role}" ${user.role === role ? 'checked' : ''}> 
+                        ${roleLabels[role]}
+                    </label>
+                `).join('')}
+            </div>
+        </div>
+        
+        <div class="form-group driver-zone" style="${user.role === 'driver' ? 'display:block;' : 'display:none;'}">
+            <label>Zone Access (comma-separated)</label>
+            <input type="text" id="userZoneAccess" class="form-control" value="${escapeHtml(user.zone_access || '')}">
+            <small class="form-text text-muted">Only for drivers</small>
+        </div>
+        <div class="form-group">
+            <label>Status</label>
+            <select id="userStatus" class="form-control">
+                <option value="1" ${user.is_active === 1 ? 'selected' : ''}>Active</option>
+                <option value="0" ${user.is_active === 0 ? 'selected' : ''}>Inactive</option>
+            </select>
+        </div>
+        <div class="form-actions">
+            <button onclick="closeModal()" class="btn-secondary">Cancel</button>
+            <button onclick="updateUser(${user.user_id})" class="btn-primary">Update User</button>
+        </div>
+    `);
+    
+    // Add event listener to show/hide zone access for drivers
+    setTimeout(() => {
+        const radioButtons = document.querySelectorAll('input[name="userRole"]');
+        const zoneDiv = document.querySelector('.driver-zone');
+        
+        if (radioButtons.length > 0 && zoneDiv) {
+            radioButtons.forEach(radio => {
+                radio.addEventListener('change', function() {
+                    zoneDiv.style.display = this.value === 'driver' ? 'block' : 'none';
+                });
+            });
+        }
+    }, 50);
+};
+
 
 window.updateUser = async function(id) {
-    const role = document.getElementById('userRole').value;
+    // Get values from form
+    const fullName = document.getElementById('userFullName')?.value || '';
+    const email = document.getElementById('userEmail')?.value || '';
+    const password = document.getElementById('userPassword')?.value || '';
+    const zoneAccess = document.getElementById('userZoneAccess')?.value || '';
+    const isActive = parseInt(document.getElementById('userStatus')?.value || '1');
+    
+    // GET ROLE FROM RADIO BUTTONS
+    const selectedRole = document.querySelector('input[name="userRole"]:checked');
+    let role = 'dispatcher'; // default
+    if (selectedRole) {
+        role = selectedRole.value;
+        console.log("✅ Selected role from radio (edit):", role);
+    }
+    
+    // Validation
+    if (!email) { alert('Email is required'); return; }
+    
     const data = {
-        full_name: document.getElementById('userFullName').value,
-        email: document.getElementById('userEmail').value,
+        full_name: fullName || null,
+        email: email,
         role: role,
-        zone_access: role === 'driver' ? document.getElementById('userZoneAccess').value : null,
-        is_active: parseInt(document.getElementById('userStatus').value)
+        zone_access: role === 'driver' ? zoneAccess : null,
+        is_active: isActive
     };
-    const password = document.getElementById('userPassword').value;
-    if (password) data.password = password;
+    
+    if (password && password.length >= 4) {
+        data.password = password;
+    } else if (password && password.length < 4) {
+        alert('Password must be at least 4 characters if changing');
+        return;
+    }
+    
+    console.log("📤 UPDATING USER:", JSON.stringify(data, null, 2));
+    
+    showLoading();
     
     try {
         const response = await fetch(`${API_BASE_URL}/users/${id}`, {
-            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data)
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
         });
+        
         const result = await response.json();
-        if (result.success) { closeModal(); refreshUsersTable(); }
-        else alert('Error: ' + result.error);
-    } catch (error) { alert('Error updating user'); }
+        
+        if (result.success) {
+            alert(`✅ User updated successfully!\nRole: ${role}`);
+            closeModal();
+            refreshUsersTable();
+        } else {
+            alert('Error: ' + (result.error || 'Failed to update user'));
+        }
+    } catch (error) {
+        console.error('❌ Error:', error);
+        alert('Error updating user: ' + error.message);
+    } finally {
+        hideLoading();
+    }
 };
 
 window.deleteUser = async function(id) {

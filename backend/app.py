@@ -801,7 +801,7 @@ def get_users():
 @app.route('/api/users', methods=['POST'])
 @login_required
 def add_user():
-    """Create a new user - HARDCODED ROLE = 'driver'"""
+    """Create a new user - uses role from request"""
     data = request.json
     
     if not data:
@@ -812,21 +812,19 @@ def add_user():
     password = data.get('password', '')
     email = data.get('email', '').strip().lower()
     full_name = data.get('full_name', '').strip() if data.get('full_name') else None
-    zone_access = data.get('zone_access', '').strip() if data.get('zone_access') else 'ZONE_A,ZONE_B,ZONE_C,ZONE_D,ZONE_E'
+    role = data.get('role', 'dispatcher')  # ← USE ROLE FROM REQUEST, default to dispatcher
+    zone_access = data.get('zone_access', '').strip() if data.get('zone_access') else None
     is_active = data.get('is_active', 1)
-    
-    # ========== HARDCODE ROLE ==========
-    role = 'driver'  # ← EVERY USER BECOMES A DRIVER
-    # ==================================
     
     # ========== DEBUG PRINT ==========
     print("\n" + "=" * 60)
-    print("📝 ADD USER - HARDCODED MODE")
+    print("📝 ADD USER")
     print("=" * 60)
     print(f"   Username: {username}")
     print(f"   Email: {email}")
-    print(f"   Role (HARDCODED): '{role}'")
+    print(f"   Role (from request): '{role}'")
     print(f"   Zone Access: {zone_access}")
+    print(f"   Full Name: {full_name}")
     print("=" * 60 + "\n")
     # ==================================
     
@@ -839,6 +837,11 @@ def add_user():
         return jsonify({'success': False, 'error': 'Password must be at least 4 characters'})
     if not email:
         return jsonify({'success': False, 'error': 'Email is required'})
+    
+    # Validate role
+    valid_roles = ['admin', 'dispatcher', 'manager', 'driver']
+    if role not in valid_roles:
+        return jsonify({'success': False, 'error': f'Invalid role. Must be one of: {", ".join(valid_roles)}'})
     
     conn = get_db_connection()
     if conn is None:
@@ -872,8 +875,8 @@ def add_user():
             password_hash,
             email,
             full_name,
-            role,  # ← HARDCODED 'driver'
-            zone_access,
+            role,  # ← NOW USING ROLE FROM REQUEST
+            zone_access if role == 'driver' else None,  # Only set zone_access for drivers
             is_active
         ))
         
